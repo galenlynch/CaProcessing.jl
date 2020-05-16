@@ -1,0 +1,17 @@
+name = "CaProcessing"
+uuid = "5d3dd9f5-cffe-4d9b-8768-e5b1153cff1e"
+authors = ["Galen Lynch <galen.lynch@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+FixedPointNumbers = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
+GLUtilities = "8b4c6747-1f02-570a-a961-a96037df41d6"
+ImageCore = "a09fc81d-aa75-5fe9-8630-4744c3626534"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
