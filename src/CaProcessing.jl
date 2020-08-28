@@ -2,19 +2,80 @@ module CaProcessing
 
 import Base.Threads.@spawn
 
+import Base: getindex, firstindex, lastindex, size, setindex!, IndexStyle,
+    axes, axes1, IdentityUnitRange
+
 # Stdlib
 using Mmap, Statistics
 # Public packages
-using FixedPointNumbers, ImageCore
+using FixedPointNumbers: Normed, N0f8
+using ImageCore: rawview
 # Private packages
 using GLUtilities: indices_above_thresh
 
-export demin,
-    demin!,
+export pixel_lut,
     avg_intensities,
-    max_intensities,
+    clip_imgs,
     clip_segments_thr,
-    map_to_8bit
+    demin,
+    demin!,
+    find_segments_thr,
+    map_to_8bit,
+    max_intensities,
+    srgb_gamma_compress,
+    rescale_compress,
+    rescale_compress_img,
+    rescale_compress_img!
+
+struct PixelLUT{T} <: AbstractArray{T,1}
+    vals::Vector{T}
+    lowerbnd::Int
+end
+PixelLUT(vals, lowerbnd::Integer) = PixelLUT(vals, convert(Int, lowerbnd))
+
+function pixel_lut(f, ::Type{T}, r::AbstractUnitRange, firstval, lastval) where T
+    vals = Vector{T}(undef, length(r) + 2)
+    @inbounds vals[1] = firstval
+    @inbounds for (i, x) in enumerate(r)
+        vals[i + 1] = f(x)
+    end
+    @inbounds vals[end] = lastval
+    PixelLUT(vals, first(r))
+end
+
+function pixel_lut(f, r::AbstractUnitRange)
+    isempty(r) && throw(ArgumentError("Must specify type and end values if r is empty"))
+    firstval = f(first(r))
+    lastval = f(last(r))
+    T = typeof(firstval)
+    pixel_lut(f, T, r, firstval, lastval)
+end
+
+pixel_lut(f, i::T) where T<:Integer = pixel_lut(f, zero(T):i)
+
+function pixel_lut(raw_vals::AbstractVector{T}, lowerbnd = 0) where T
+    nraw = length(raw_vals)
+    nraw > 0 || throw(ArgumentError("raw_vals cannot be empty"))
+    vals = similar(raw_vals, (nraw + 2,))
+    @inbounds vals[1] = raw_vals[1]
+    unsafe_copyto!(vals, 2, raw_vals, 1, nraw)
+    @inbounds vals[nraw + 2] = raw_vals[nraw]
+    PixelLUT(vals, lowerbnd)
+end
+
+@inline function getindex(a::PixelLUT, i)
+    i_raw = i - a.lowerbnd + 2
+    i_clamp = min(max(i_raw, 1), length(a.vals))
+    @inbounds a.vals[i_clamp]
+end
+
+@inline getindex(a::PixelLUT, i::Normed) = a[reinterpret(i)]
+
+setindex!(::PixelLUT, ::Any) = throw(ReadOnlyMemoryError())
+size(a::PixelLUT) = (length(a.vals) - 2,)
+IndexStyle(::Type{PixelLUT}) = IndexLinear()
+axes(a::PixelLUT) =
+    (IdentityUnitRange(a.lowerbnd:a.lowerbnd + length(a.vals) - 3),)
 
 function frame_min(imgs::AbstractArray{T, 3}) where T
     nr, nc, nf = size(imgs)
@@ -91,6 +152,7 @@ function _max_intensities!(intensities, imgs, lo, hi)
         intensities[fno] = maximum(imgs[:, :, fno])
     end
 end
+
 function max_intensities(imgs::AbstractArray{<:Any, 3}; nt = Threads.nthreads())
     nf = size(imgs, 3)
     intensities = similar(imgs, (nf,))
@@ -109,18 +171,25 @@ function max_intensities(imgs::AbstractArray{<:Any, 3}; nt = Threads.nthreads())
     return intensities
 end
 
-function clip_segments_thr(imgs, thr; nt = Threads.nthreads(), x = :, y = :)
+function clip_imgs(imgs; x = :, y = :)
     nf = size(imgs, 3)
-    clipped_imgs = view(imgs, x, y, 1:nf)
-    intensities = max_intensities(imgs, nt = nt)
-    open_pers = indices_above_thresh(intensities, thr)
+    view(imgs, x, y, 1:nf)
+end
+
+function find_segments_thr(imgs, thr; nt = Threads.nthreads())
+    intensities = avg_intensities(imgs, nt = nt)
+    indices_above_thresh(intensities, thr)
+end
+
+"""
+Assumes images are row-major
+"""
+function clip_segments_thr(imgs, thr; nt = Threads.nthreads())
+    open_pers = find_segments_thr(imgs, thr, nt = nt)
     nseg = size(open_pers, 2)
-
-    segments = Vector{typeof(clipped_imgs)}(undef, nseg)
-    for segno in 1:nseg
-        segments[segno] = view(imgs, x, y, open_pers[1, segno]:open_pers[2, segno])
+    segments = map(1:nseg) do segno
+        view(imgs, :, :, open_pers[1, segno]:open_pers[2, segno])
     end
-
     return segments, open_pers
 end
 
@@ -133,6 +202,57 @@ function map_to_8bit(imgs::AbstractArray{<:Normed, 3})
     cnts = rawview(imgs)
     copyto!(outcnts, 1, cnts, 1, length(cnts))
     return out
+end
+
+srgb_gamma_compress(x) = x <= 0.0031308 ?
+    323 * x / 25 :
+    (211 * x ^ (5/12) - 11)/200
+
+@inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
+    scaled_val = srgb_gamma_compress(scale * x)
+    return round(UInt8, typemax(UInt8) * scaled_val)
+end
+
+rescale_compress(d::DataType, x::Normed, scale::Float64) =
+    rescale_compress(d, reinterpret(x), scale)
+
+function __rescale_compress_img!(outimg::AbstractMatrix{T}, inimg, lut, lo,
+                                 hi) where T
+    rows = 1:size(inimg, 1)
+    @inbounds for colno in lo:hi, rowno in rows
+        outimg[rowno, colno] = lut[inimg[rowno, colno]]
+    end
+end
+
+function _rescale_compress_img!(outimg::AbstractMatrix, inimg,
+                                lut; nt = 4)
+    ncol  = size(inimg, 2)
+    if nt > 1
+        tasks = Vector{Task}(undef, nt)
+        blksize = cld(ncol, nt)
+        for tno in 1:nt
+            lo = (tno - 1) * blksize + 1
+            hi = min(tno * blksize, ncol)
+            @inbounds tasks[tno] = @spawn __rescale_compress_img!(
+                outimg, inimg, lut, lo, hi
+            )
+        end
+        foreach(wait, tasks)
+    else
+        __rescale_compress_img!(outimg, inimg, lut, 1, ncol)
+    end
+    outimg
+end
+
+function rescale_compress_img!(outimg, inimg, lut; kwargs...)
+    if size(outimg) != size(inimg)
+        throw(ArgumentError("outimg and inimg must have the same size"))
+    end
+    _rescale_compress_img!(outimg, inimg, lut; kwargs...)
+end
+
+function rescale_compress_img(inimg, lut)
+    rescale_compress_img!(similar(inimg, UInt8), inimg, lut)
 end
 
 end # module
