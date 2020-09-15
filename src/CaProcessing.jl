@@ -186,9 +186,9 @@ Assumes images are row-major
 """
 function clip_segments_thr(imgs, thr; nt = Threads.nthreads())
     open_pers = find_segments_thr(imgs, thr, nt = nt)
-    nseg = size(open_pers, 2)
+    nseg = length(open_pers)
     segments = map(1:nseg) do segno
-        view(imgs, :, :, open_pers[1, segno]:open_pers[2, segno])
+        view(imgs, :, :, open_pers[segno])
     end
     return segments, open_pers
 end
