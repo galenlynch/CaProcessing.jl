@@ -23,6 +23,7 @@ export pixel_lut,
     map_to_8bit,
     max_intensities,
     srgb_gamma_compress,
+    srgb_gamma_expand,
     rescale_compress,
     rescale_compress_img,
     rescale_compress_img!
@@ -206,7 +207,11 @@ end
 
 srgb_gamma_compress(x) = x <= 0.0031308 ?
     323 * x / 25 :
-    (211 * x ^ (5/12) - 11)/200
+    (211 * x ^ (5 / 12) - 11) / 200
+
+srgb_gamma_expand(x) = x <= 0.04045 ?
+    25 * x / 323 :
+    ((200 * x + 11) / 211)^(12 / 5)
 
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
     scaled_val = srgb_gamma_compress(scale * x)
