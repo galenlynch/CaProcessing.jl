@@ -86,7 +86,7 @@ end
 
 function apply_lut!(lut::PixelLUT, dest, src; nt = Threads.nthreads())
     nel = length(src)
-    nel == length(dest)
+    nel == length(dest) || throw(ArgumentError("inputs not the same size"))
     if nt > 1
         blksize = cld(nel, nt)
         tasks = Vector{Task}(undef, nt)
