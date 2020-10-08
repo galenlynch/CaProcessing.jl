@@ -188,7 +188,7 @@ end
 
 function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
     for cno in lo:hi
-        for rno in rowrange
+        @inbounds @simd ivdep for rno in rowrange
             dest[rno, cno] = thisframe[rno, cno] - rmframe[rno, cno]
         end
     end
