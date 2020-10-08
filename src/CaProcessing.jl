@@ -78,35 +78,191 @@ IndexStyle(::Type{PixelLUT}) = IndexLinear()
 axes(a::PixelLUT) =
     (IdentityUnitRange(a.lowerbnd:a.lowerbnd + length(a.vals) - 3),)
 
+function _apply_lut!(lut, dest, src, lo, hi)
+    @inbounds @simd ivdep for elno in lo:hi
+        dest[elno] = lut[src[elno]]
+    end
+end
+
+function apply_lut!(lut::PixelLUT, dest, src; nt = Threads.nthreads())
+    nel = length(src)
+    nel == length(dest)
+    if nt > 1
+        blksize = cld(nel, nt)
+        tasks = Vector{Task}(undef, nt)
+        for tno in 1:nt
+            lo = (tno - 1) * blksize + 1
+            hi = min(tno * blksize, nel)
+            @inbounds tasks[tno] = @spawn _apply_lut!(lut, dest, src, lo, hi)
+        end
+        foreach(wait, tasks)
+    else
+        _apply_lut!(lut, dest, src, 1, nel)
+    end
+    return dest
+end
+
+apply_lut!(lut, src; kwargs...) = apply_lut(lut, src, src; kwargs...)
+
+apply_lut(lut, arr; kwargs...) = apply_lut!(lut, similar(arr), arr; kwargs...)
+
 function frame_min(imgs::AbstractArray{T, 3}) where T
     nr, nc, nf = size(imgs)
     reduced_frames = reduce(min, imgs; dims = (3,), init = typemax(T))
     return reshape(reduced_frames, (nr, nc))
 end
 
-function _demin!(dest, imgs, minframe, lo, hi)
-    @inbounds @simd for fno in lo:hi
-        dest[:, :, fno] .= imgs[:, :, fno] .- minframe
+function _frame_min_max!(minframe, maxframe, thisframe, rowrange, lo, hi)
+    for colno in lo:hi
+        @inbounds @simd ivdep for rowno in rowrange
+            thisval = thisframe[rowno, colno]
+            minframe[rowno, colno] = min(minframe[rowno, colno], thisval)
+            maxframe[rowno, colno] = max(maxframe[rowno, colno], thisval)
+        end
     end
 end
 
-function demin!(dest::AbstractArray, imgs::AbstractArray; nt = Threads.nthreads())
-    sz = size(imgs)
-    size(dest) == sz || throw(ArgumentError("Sizes are not the same"))
-    nf = sz[3]
-    minframe = frame_min(imgs)
+function frame_min_max!(minframe, maxframe, tasks, thisframe, rowrange, los,
+                        his)
+    @inbounds for tno in eachindex(tasks)
+        tasks[tno] = @spawn _frame_min_max!(minframe, maxframe, thisframe,
+                                            rowrange, los[tno], his[tno])
+    end
+    foreach(wait, tasks)
+    return minframe, maxframe
+end
+
+function frame_min_max!(minframe, maxframe, thisframe; nt = Threads.nthreads())
+    nr, nc = size(thisframe)
+    rowrange = 1:nr
     if nt > 1
-        blksize = cld(nf, nt)
+        blksize = cld(nc, nt)
         tasks = Vector{Task}(undef, nt)
         for tno in 1:nt
             lo = (tno - 1) * blksize + 1
-            hi = min(tno * blksize, nf)
-            @inbounds tasks[tno] = @spawn _demin!(dest, imgs, minframe, lo, hi)
+            hi = min(tno * blksize, nc)
+            @inbounds tasks[tno] = @spawn _frame_min_max!(minframe, maxframe,
+                                                          thisframe, rowrange,
+                                                          lo, hi)
         end
         foreach(wait, tasks)
     else
-        _demin!(dest, imgs, minframe, 1, nf)
+        _frame_min_max!(minframe, maxframe, thisframe, rowrange, 1, nc)
     end
+    return minframe, maxframe
+end
+
+function frames_min_max!(minframe, maxframe, imgs::AbstractArray{<:Any, 3};
+                        nt = Threads.nthreads())
+    nr, nc, nf = size(imgs)
+    rowrange = 1:nr
+    if nt > 1
+        blksize = cld(nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        los = Vector{Int}(undef, nt)
+        his = similar(los)
+        @inbounds for tno in 1:nt
+            los[tno] = (tno - 1) * blksize + 1
+            his[tno] = min(tno * blksize, nc)
+        end
+        tasks = Vector{Task}(undef, nt)
+        for fno in 1:nf
+            frame_min_max!(minframe, maxframe, tasks, view(imgs, :, :, fno),
+                           rowrange, los, his)
+        end
+    else
+        for fno in 1:nf
+            _frame_min_max!(minframe, maxframe, view(imgs, :, :, fno), rowrange,
+                            1, nc)
+        end
+    end
+    return minframe, maxframe
+end
+
+function frames_min_max(imgs::AbstractArray{T, 3}; nt = Threads.nthreads()) where T
+    nr, nc, nz = size(imgs)
+    minframe = fill(typemax(T), (nr, nc))
+    maxframe = fill(typemin(T), (nr, nc))
+    frames_min_max!(minframe, maxframe, imgs, nt = nt)
+end
+
+function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
+    for cno in lo:hi
+        for rno in rowrange
+            dest[rno, cno] = thisframe[rno, cno] - rmframe[rno, cno]
+        end
+    end
+end
+
+function subtract_frame!(dest, thisframe, rmframe; nt = Threads.nthreads())
+    sz = size(thisframe)
+    size(dest) == sz || throw(ArgumentError("Sizes are not the same"))
+    nr, nc = sz
+    rowrange = 1:nr
+    if nt > 1
+        blksize = cld(nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for tno in 1:nt
+            lo = (tno - 1) * blksize + 1
+            hi = min(tno * blksize, nc)
+            @inbounds tasks[tno] = @spawn _subtract_frame!(dest, thisframe,
+                                                           rmframe, rowrange,
+                                                           lo, hi)
+        end
+        foreach(wait, tasks)
+    else
+        _subtract_frame!(dest, thisframe, rmframe, rowrange, 1, nc)
+    end
+    return dest
+end
+
+function subtract_frame!(dest, tasks, thisframe, rmframe, rowrange, los, his)
+    @inbounds for tno in eachindex(tasks)
+        tasks[tno] = @spawn _subtract_frame!(dest, thisframe, rmframe, rowrange,
+                                             los[tno], his[tno])
+    end
+    foreach(wait, tasks)
+    return dest
+end
+
+subtract_frame(frame, rmframe; kwargs...) =
+    subtract_frame!(similar(frame), frame, rmframe; kwargs...)
+
+function subtract_frames!(dest, frames, rmframe; nt = Threads.nthreads())
+    sz = size(frames)
+    size(dest) == sz || throw(ArgumentError("Sizes are not the same"))
+    nr, nc, nf = sz
+    rowrange = 1:nr
+    if nt > 1
+        blksize = cld(nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        los = similar(tasks, Int)
+        his = similar(los)
+        @inbounds for tno in 1:nt
+            los[tno] = (tno - 1) * blksize + 1
+            his[tno] = min(tno * blksize, nc)
+        end
+        @inbounds for fno in 1:nf
+            subtract_frame!(view(dest, :, :, fno), tasks,
+                            view(frames, :, :, fno), rmframe, rowrange, los,
+                            his)
+        end
+    else
+        @inbounds for fno in 1:nf
+            _subtract_frame!(view(dest, :, :, fno), view(frames, :, :, fno),
+                             rmframe, rowrange, 1, nc)
+        end
+    end
+    return dest
+end
+
+subtract_frames(frames, rmframe; kwargs...) =
+    subtract_frames!(similar(frames), frames, rmframe; kwargs...)
+
+function demin!(dest::AbstractArray, imgs::AbstractArray; nt = Threads.nthreads())
+    size(dest) == size(imgs) || throw(ArgumentError("Sizes are not the same"))
+    minframe = frame_min(imgs)
+    subtract_frames!(dest, imgs, minframe, nt = nt)
     return dest
 end
 
