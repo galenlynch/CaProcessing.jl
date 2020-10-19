@@ -33,26 +33,35 @@ struct PixelLUT{T} <: AbstractArray{T,1}
     lowerbnd::Int
 end
 PixelLUT(vals, lowerbnd::Integer) = PixelLUT(vals, convert(Int, lowerbnd))
+PixelLUT(vals, lowerbnd::Normed) = PixelLUT(vals, reinterpret(lowerbnd))
 
-function pixel_lut(f, ::Type{T}, r::AbstractUnitRange, firstval, lastval) where T
+"""
+    pixel_lut(f, ::Type{T}, r::AbstractUnitRange, lowval, hival) where T
+
+Construct a [`PixelLUT`](@ref) by applying `f` to each element of `r`, and
+converting the result to type `T`. Values below and above `r` will be mapped
+onto `lowval` and `highval`, respectively.
+"""
+function pixel_lut(f, ::Type{T}, r::AbstractRange, lowval, hival) where T
     vals = Vector{T}(undef, length(r) + 2)
-    @inbounds vals[1] = firstval
+    @inbounds vals[1] = lowval
     @inbounds for (i, x) in enumerate(r)
         vals[i + 1] = f(x)
     end
-    @inbounds vals[end] = lastval
+    @inbounds vals[end] = hival
     PixelLUT(vals, first(r))
 end
 
-function pixel_lut(f, r::AbstractUnitRange)
+function pixel_lut(f, r::AbstractRange)
     isempty(r) && throw(ArgumentError("Must specify type and end values if r is empty"))
-    firstval = f(first(r))
-    lastval = f(last(r))
-    T = typeof(firstval)
-    pixel_lut(f, T, r, firstval, lastval)
+    lowval = f(first(r))
+    hival = f(last(r))
+    T = typeof(lowval)
+    pixel_lut(f, T, r, lowval, hival)
 end
 
 pixel_lut(f, i::T) where T<:Integer = pixel_lut(f, zero(T):i)
+pixel_lut(f, i::T) where T<:Normed = pixel_lut(f, zero(T):eps(T):i)
 
 function pixel_lut(raw_vals::AbstractVector{T}, lowerbnd = 0) where T
     nraw = length(raw_vals)
@@ -66,7 +75,7 @@ end
 
 @inline function getindex(a::PixelLUT, i)
     i_raw = i - a.lowerbnd + 2
-    i_clamp = min(max(i_raw, 1), length(a.vals))
+    i_clamp = clamp(i_raw, 1, length(a.vals))
     @inbounds a.vals[i_clamp]
 end
 
@@ -372,6 +381,11 @@ srgb_gamma_expand(x) = x <= 0.04045 ?
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
     scaled_val = srgb_gamma_compress(scale * x)
     return round(UInt8, typemax(UInt8) * scaled_val)
+end
+
+@inline function rescale_compress(::Type{T}, x::Normed, scale::AbstractFloat) where T<:Normed
+    scaled_val = srgb_gamma_compress(scale * x)
+    convert(T, scaled_val)
 end
 
 rescale_compress(d::DataType, x::Normed, scale::Float64) =
