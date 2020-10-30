@@ -111,7 +111,7 @@ function apply_lut!(lut::PixelLUT, dest, src; nt = Threads.nthreads())
     return dest
 end
 
-apply_lut!(lut, src; kwargs...) = apply_lut(lut, src, src; kwargs...)
+apply_lut!(lut, src; kwargs...) = apply_lut!(lut, src, src; kwargs...)
 
 apply_lut(lut, arr; kwargs...) = apply_lut!(lut, similar(arr), arr; kwargs...)
 
@@ -234,8 +234,11 @@ function subtract_frame!(dest, tasks, thisframe, rmframe, rowrange, los, his)
     return dest
 end
 
-subtract_frame(frame, rmframe; kwargs...) =
-    subtract_frame!(similar(frame), frame, rmframe; kwargs...)
+function subtract_frame(frame::AbstractArray{T},
+                        rmframe::AbstractArray{S}; kwargs...) where {S,T}
+    subtract_frame!(similar(frame, promote_type(T, S)), frame, rmframe;
+                    kwargs...)
+end
 
 function subtract_frames!(dest, frames, rmframe; nt = Threads.nthreads())
     sz = size(frames)
@@ -377,6 +380,49 @@ srgb_gamma_compress(x) = x <= 0.0031308 ?
 srgb_gamma_expand(x) = x <= 0.04045 ?
     25 * x / 323 :
     ((200 * x + 11) / 211)^(12 / 5)
+
+rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T<:Integer =
+    round(T, newmax * float(x - xmin) / (xmax - xmin))
+rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T =
+    convert(T, newmax * float(x - xmin) / (xmax - xmin))
+
+rescale_brightness(x::T, xmin, xmax, newmax) where T =
+    rescale_brightness(T, x, xmin, xmax, newmax)
+
+rescale_brightness(x, xmax, newmax) = rescale_brightness(x, 0, xmax, newmax)
+
+
+function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T <: Integer
+    gamma_float = srgb_gamma_compress(rescale_brightness(Float64, x, xmin, xmax, 1))
+    return round(T, newmax * gamma_float)
+end
+function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T
+    gamma_float = srgb_gamma_compress(rescale_brightness(Float64, x, xmin, xmax, 1))
+    convert(T, gamma_float)
+end
+gamma_compensate_rescale(x::T, args...) where T = gamma_compensate_rescale(T, x, args...)
+
+function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
+    scale = 1 / maxval
+    r = minval:maxval
+    if use_gamma
+        lut = pixel_lut(x -> gamma_compensate_rescale(T, x, minval, maxval,
+                                                      newmax), r)
+    else
+        lut = pixel_lut(x -> rescale_brightness(T, x, minval, maxval, newmax),
+                        r)
+    end
+    lut
+end
+
+function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
+    if use_gamma
+        scale_f = x -> gamma_compensate_rescale(T, x, minval, maxval, newmax)
+    else
+        scale_f = x -> rescale_brightness(T, x, minval, maxval, newmax)
+    end
+    scale_f
+end
 
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
     scaled_val = srgb_gamma_compress(scale * x)
