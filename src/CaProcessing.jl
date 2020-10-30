@@ -11,22 +11,38 @@ using Mmap, Statistics
 using FixedPointNumbers: Normed, N0f8
 using ImageCore: rawview
 # Private packages
-using GLUtilities: indices_above_thresh
+using GLUtilities: indices_above_thresh, reduce_extrema
 
 export pixel_lut,
+    apply_lut,
+    apply_lut!,
     avg_intensities,
     clip_imgs,
     clip_segments_thr,
     demin,
     demin!,
     find_segments_thr,
+    frame_min_max!,
+    frames_min_max,
+    frames_min_max!,
+    frames_min_max_mean,
+    frame_min_max_sum!,
+    frames_min_max_sum,
+    freams_min_max_sum!,
+    gamma_compensate_rescale,
     map_to_8bit,
+    make_scale_f,
+    make_pixel_lut,
     max_intensities,
     srgb_gamma_compress,
     srgb_gamma_expand,
+    rescale_brightness,
     rescale_compress,
     rescale_compress_img,
-    rescale_compress_img!
+    rescale_compress_img!,
+    subtract_frame,
+    subtract_frame!,
+    subtract_frames
 
 struct PixelLUT{T} <: AbstractArray{T,1}
     vals::Vector{T}
@@ -194,6 +210,93 @@ function frames_min_max(imgs::AbstractArray{T, 3}; nt = Threads.nthreads()) wher
     maxframe = fill(typemin(T), (nr, nc))
     frames_min_max!(minframe, maxframe, imgs, nt = nt)
 end
+
+function _frame_min_max_sum!(minf, maxf, accf, thisframe, rowrange, lo, hi)
+    for colno in lo:hi
+        @inbounds @simd ivdep for rowno in rowrange
+            thisval = thisframe[rowno, colno]
+            minf[rowno, colno] = min(minf[rowno, colno], thisval)
+            maxf[rowno, colno] = max(maxf[rowno, colno], thisval)
+            accf[rowno, colno] = accf[rowno, colno] + thisval
+        end
+    end
+end
+
+function frame_min_max_sum!(minf, maxf, accf, tasks, thisframe, rowrange, los,
+                        his)
+    @inbounds for tno in eachindex(tasks)
+        tasks[tno] = @spawn _frame_min_max_sum!(minf, maxf, accf, thisframe,
+                                            rowrange, los[tno], his[tno])
+    end
+    foreach(wait, tasks)
+    return minf, maxf
+end
+
+function frame_min_max_sum!(minf, maxf, accf, thisframe; nt = Threads.nthreads())
+    nr, nc = size(thisframe)
+    rowrange = 1:nr
+    if nt > 1
+        blksize = cld(nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for tno in 1:nt
+            lo = (tno - 1) * blksize + 1
+            hi = min(tno * blksize, nc)
+            @inbounds tasks[tno] = @spawn _frame_min_max_sum!(minf, maxf, accf,
+                                                          thisframe, rowrange,
+                                                          lo, hi)
+        end
+        foreach(wait, tasks)
+    else
+        _frame_min_max_sum!(minf, maxf, accf, thisframe, rowrange, 1, nc)
+    end
+    return minf, maxf
+end
+
+function frames_min_max_sum!(minf, maxf, accf, imgs; nt = Threads.nthreads())
+    nr, nc, nf = size(imgs)
+    rowrange = 1:nr
+    if nt > 1
+        blksize = cld(nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        los = Vector{Int}(undef, nt)
+        his = similar(los)
+        @inbounds for tno in 1:nt
+            los[tno] = (tno - 1) * blksize + 1
+            his[tno] = min(tno * blksize, nc)
+        end
+        tasks = Vector{Task}(undef, nt)
+        for fno in 1:nf
+            frame_min_max_sum!(minf, maxf, accf, tasks, view(imgs, :, :, fno),
+                                rowrange, los, his)
+        end
+    else
+        for fno in 1:nf
+            _frame_min_max_sum!(minf, maxf, accf, view(imgs, :, :, fno), rowrange,
+                            1, nc)
+        end
+    end
+    minf, maxf, accf
+end
+
+function frames_min_max_sum(::Type{T}, imgs::AbstractArray{<:Unsigned, 3};
+                            kwargs...) where T
+    nr, nc, nz = size(imgs)
+    minf = fill(typemax(T), (nr, nc))
+    maxf = fill(typemin(T), (nr, nc))
+    accf = zeros(UInt64, (nr, nc))
+    frames_min_max_sum!(minf, maxf, accf, imgs; kwargs...)
+end
+frames_min_max_sum(imgs; kwargs...) = frames_min_max_sum(UInt32, imgs; kwargs...)
+
+function frames_min_max_mean(::Type{T}, imgs; kwargs...) where T
+    nf = size(imgs, 3)
+    nf > 0 || throw(ArugmentError("imgs must not be empty"))
+    minf, maxf, accf = frames_min_max_sum(T, imgs; kwargs...)
+    meanf = similar(accf, Float32)
+    meanf .= accf ./ nf
+    minf, maxf, meanf
+end
+frames_min_max_mean(imgs; kwargs...) = frames_min_max_mean(UInt32, imgs; kwargs...)
 
 function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
     for cno in lo:hi
@@ -415,6 +518,9 @@ function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) wh
     lut
 end
 
+make_pixel_lut(minv::T, maxv::T, newmax; kwargs...) where T =
+    make_pixel_lut(T, minv, maxv, newmax; kwargs...)
+
 function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
     if use_gamma
         scale_f = x -> gamma_compensate_rescale(T, x, minval, maxval, newmax)
@@ -423,6 +529,9 @@ function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) wher
     end
     scale_f
 end
+
+make_scale_f(minv::T, maxv::T, newmax; kwargs...) where T =
+    make_scale_f(T, minv, maxv, newmax; kwargs...)
 
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
     scaled_val = srgb_gamma_compress(scale * x)
@@ -474,6 +583,23 @@ end
 
 function rescale_compress_img(inimg, lut)
     rescale_compress_img!(similar(inimg, UInt8), inimg, lut)
+end
+
+lut_maxrange(minv, maxv, newmax) = make_pixel_lut(minv, maxv, newmax)
+lut_maxrange(minv::T, maxv::T) where T<:Integer =
+    lut_maxrange(minv, maxv, typemax(T))
+lut_maxrange(minval::T, maxval::T) where T<:Normed =
+    lut_maxrange(minval, maxval, one(T))
+lut_maxrange(minv, maxv, ::Nothing) = lut_maxrange(minv, maxv)
+
+function lut_maxrange(imgstack, newmax = nothing)
+    minval, maxval = mapreduce(extrema, reduce_extrema, imgstack)
+    lut_maxrange(minval, maxval, newmax)
+end
+
+function lut_maxrange(imgstack::AbstractArray{T, 3}, newmax = nothing) where T
+    minval, maxval = extrema(imgstack)
+    lut_maxrange(minval, maxval, newmax)
 end
 
 end # module
