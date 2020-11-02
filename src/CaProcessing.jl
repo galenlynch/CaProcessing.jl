@@ -1,14 +1,14 @@
 module CaProcessing
 
-import Base.Threads.@spawn
+using Base.Threads: @spawn, nthreads
 
 import Base: getindex, firstindex, lastindex, size, setindex!, IndexStyle,
-    axes, axes1, IdentityUnitRange
+    axes, axes1, IdentityUnitRange, Slice
 
 # Stdlib
 using Mmap, Statistics
 # Public packages
-using FixedPointNumbers: Normed, N0f8
+using FixedPointNumbers: Normed, N0f8, N6f10
 using ImageCore: rawview
 # Private packages
 using GLUtilities: indices_above_thresh, reduce_extrema
@@ -27,7 +27,7 @@ export pixel_lut,
     frames_min_max!,
     frames_min_max_mean,
     frame_min_max_sum!,
-    frames_min_max_sum,
+    frames_min_max_accum,
     freams_min_max_sum!,
     gamma_compensate_rescale,
     map_to_8bit,
@@ -109,7 +109,7 @@ function _apply_lut!(lut, dest, src, lo, hi)
     end
 end
 
-function apply_lut!(lut::PixelLUT, dest, src; nt = Threads.nthreads())
+function apply_lut!(lut::PixelLUT, dest, src; nt = nthreads())
     nel = length(src)
     nel == length(dest) || throw(ArgumentError("inputs not the same size"))
     if nt > 1
@@ -157,7 +157,7 @@ function frame_min_max!(minframe, maxframe, tasks, thisframe, rowrange, los,
     return minframe, maxframe
 end
 
-function frame_min_max!(minframe, maxframe, thisframe; nt = Threads.nthreads())
+function frame_min_max!(minframe, maxframe, thisframe; nt = nthreads())
     nr, nc = size(thisframe)
     rowrange = 1:nr
     if nt > 1
@@ -178,12 +178,11 @@ function frame_min_max!(minframe, maxframe, thisframe; nt = Threads.nthreads())
 end
 
 function frames_min_max!(minframe, maxframe, imgs::AbstractArray{<:Any, 3};
-                        nt = Threads.nthreads())
+                        nt = nthreads())
     nr, nc, nf = size(imgs)
     rowrange = 1:nr
     if nt > 1
         blksize = cld(nc, nt)
-        tasks = Vector{Task}(undef, nt)
         los = Vector{Int}(undef, nt)
         his = similar(los)
         @inbounds for tno in 1:nt
@@ -204,15 +203,15 @@ function frames_min_max!(minframe, maxframe, imgs::AbstractArray{<:Any, 3};
     return minframe, maxframe
 end
 
-function frames_min_max(imgs::AbstractArray{T, 3}; nt = Threads.nthreads()) where T
+function frames_min_max(imgs::AbstractArray{T, 3}; nt = nthreads()) where T
     nr, nc, nz = size(imgs)
     minframe = fill(typemax(T), (nr, nc))
     maxframe = fill(typemin(T), (nr, nc))
     frames_min_max!(minframe, maxframe, imgs, nt = nt)
 end
 
-function _frame_min_max_sum!(minf, maxf, accf, thisframe, rowrange, lo, hi)
-    for colno in lo:hi
+function _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange, colrange)
+    for colno in colrange
         @inbounds @simd ivdep for rowno in rowrange
             thisval = thisframe[rowno, colno]
             minf[rowno, colno] = min(minf[rowno, colno], thisval)
@@ -222,17 +221,22 @@ function _frame_min_max_sum!(minf, maxf, accf, thisframe, rowrange, lo, hi)
     end
 end
 
-function frame_min_max_sum!(minf, maxf, accf, tasks, thisframe, rowrange, los,
-                        his)
-    @inbounds for tno in eachindex(tasks)
-        tasks[tno] = @spawn _frame_min_max_sum!(minf, maxf, accf, thisframe,
-                                            rowrange, los[tno], his[tno])
+function frame_min_max_accum!(minf, maxf, accf, tasks, thisframe, rowrange,
+                              colranges)
+    if isempty(tasks)
+        _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange,
+                              colranges[1])
+    else
+        @inbounds for tno in eachindex(tasks)
+            tasks[tno] = @spawn _frame_min_max_accum!(minf, maxf, accf, thisframe,
+                                                      rowrange, colranges[tno])
+        end
+        foreach(wait, tasks)
     end
-    foreach(wait, tasks)
-    return minf, maxf
+    return minf, maxf, accf
 end
 
-function frame_min_max_sum!(minf, maxf, accf, thisframe; nt = Threads.nthreads())
+function frame_min_max_accum!(minf, maxf, accf, thisframe; nt = nthreads())
     nr, nc = size(thisframe)
     rowrange = 1:nr
     if nt > 1
@@ -241,23 +245,22 @@ function frame_min_max_sum!(minf, maxf, accf, thisframe; nt = Threads.nthreads()
         for tno in 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nc)
-            @inbounds tasks[tno] = @spawn _frame_min_max_sum!(minf, maxf, accf,
+            @inbounds tasks[tno] = @spawn _frame_min_max_accum!(minf, maxf, accf,
                                                           thisframe, rowrange,
-                                                          lo, hi)
+                                                          lo:hi)
         end
         foreach(wait, tasks)
     else
-        _frame_min_max_sum!(minf, maxf, accf, thisframe, rowrange, 1, nc)
+        _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange, 1, nc)
     end
-    return minf, maxf
+    return minf, maxf, accf
 end
 
-function frames_min_max_sum!(minf, maxf, accf, imgs; nt = Threads.nthreads())
+function frames_min_max_accum!(minf, maxf, accf, imgs; nt = nthreads())
     nr, nc, nf = size(imgs)
     rowrange = 1:nr
     if nt > 1
         blksize = cld(nc, nt)
-        tasks = Vector{Task}(undef, nt)
         los = Vector{Int}(undef, nt)
         his = similar(los)
         @inbounds for tno in 1:nt
@@ -266,37 +269,51 @@ function frames_min_max_sum!(minf, maxf, accf, imgs; nt = Threads.nthreads())
         end
         tasks = Vector{Task}(undef, nt)
         for fno in 1:nf
-            frame_min_max_sum!(minf, maxf, accf, tasks, view(imgs, :, :, fno),
+            frame_min_max_accum!(minf, maxf, accf, tasks, view(imgs, :, :, fno),
                                 rowrange, los, his)
         end
     else
         for fno in 1:nf
-            _frame_min_max_sum!(minf, maxf, accf, view(imgs, :, :, fno), rowrange,
-                            1, nc)
+            _frame_min_max_accum!(minf, maxf, accf, view(imgs, :, :, fno),
+                                  rowrange, 1, nc)
         end
     end
     minf, maxf, accf
 end
 
-function frames_min_max_sum(::Type{T}, imgs::AbstractArray{<:Unsigned, 3};
-                            kwargs...) where T
-    nr, nc, nz = size(imgs)
-    minf = fill(typemax(T), (nr, nc))
-    maxf = fill(typemin(T), (nr, nc))
-    accf = zeros(UInt64, (nr, nc))
-    frames_min_max_sum!(minf, maxf, accf, imgs; kwargs...)
+function frames_min_max_accum_alloc(::Type{S}, ::Type{T}, sz) where {S, T}
+    minf = Array{T}(undef, sz)
+    maxf = similar(minf)
+    accf = Array{S}(undef, sz)
+    minf, maxf, accf
 end
-frames_min_max_sum(imgs; kwargs...) = frames_min_max_sum(UInt32, imgs; kwargs...)
 
-function frames_min_max_mean(::Type{T}, imgs; kwargs...) where T
+function frames_min_max_accum_init!(minf::AbstractArray{T},
+                                    maxf::AbstractArray{T},
+                                    accf) where T
+    fill!(minf, typemax(T))
+    fill!(maxf, typemin(T))
+    fill!(accf, 0)
+    minf, maxf, accf
+end
+
+function frames_min_max_accum(::Type{S}, imgs::AbstractArray{T, 3};
+                            kwargs...) where {S,T<:Unsigned}
+    nr, nc, nz = size(imgs)
+    minf, maxf, accf = frames_min_max_accum(S, T, (nr, nc))
+    frames_min_max_accum!(minf, maxf, accf, imgs; kwargs...)
+end
+frames_min_max_accum(imgs; kwargs...) = frames_min_max_accum(UInt32, imgs; kwargs...)
+
+function frames_min_max_mean(::Type{S}, ::Type{T}, imgs; kwargs...) where {S,T}
     nf = size(imgs, 3)
     nf > 0 || throw(ArugmentError("imgs must not be empty"))
-    minf, maxf, accf = frames_min_max_sum(T, imgs; kwargs...)
-    meanf = similar(accf, Float32)
+    minf, maxf, accf = frames_min_max_accum(T, imgs; kwargs...)
+    meanf = similar(accf, S)
     meanf .= accf ./ nf
     minf, maxf, meanf
 end
-frames_min_max_mean(imgs; kwargs...) = frames_min_max_mean(UInt32, imgs; kwargs...)
+frames_min_max_mean(imgs; kwargs...) = frames_min_max_mean(Float32, UInt32, imgs; kwargs...)
 
 function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
     for cno in lo:hi
@@ -306,7 +323,7 @@ function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
     end
 end
 
-function subtract_frame!(dest, thisframe, rmframe; nt = Threads.nthreads())
+function subtract_frame!(dest, thisframe, rmframe; nt = nthreads())
     sz = size(thisframe)
     size(dest) == sz || throw(ArgumentError("Sizes are not the same"))
     nr, nc = sz
@@ -343,7 +360,7 @@ function subtract_frame(frame::AbstractArray{T},
                     kwargs...)
 end
 
-function subtract_frames!(dest, frames, rmframe; nt = Threads.nthreads())
+function subtract_frames!(dest, frames, rmframe; nt = nthreads())
     sz = size(frames)
     size(dest) == sz || throw(ArgumentError("Sizes are not the same"))
     nr, nc, nf = sz
@@ -374,7 +391,7 @@ end
 subtract_frames(frames, rmframe; kwargs...) =
     subtract_frames!(similar(frames), frames, rmframe; kwargs...)
 
-function demin!(dest::AbstractArray, imgs::AbstractArray; nt = Threads.nthreads())
+function demin!(dest::AbstractArray, imgs::AbstractArray; nt = nthreads())
     size(dest) == size(imgs) || throw(ArgumentError("Sizes are not the same"))
     minframe = frame_min(imgs)
     subtract_frames!(dest, imgs, minframe, nt = nt)
@@ -401,7 +418,7 @@ function _avg_intensities!(intensities, imgs, lo, hi)
     end
 end
 
-function avg_intensities(imgs::AbstractArray{<:Any, 3}; nt = Threads.nthreads())
+function avg_intensities(imgs::AbstractArray{<:Any, 3}; nt = nthreads())
     nf = size(imgs, 3)
     intensities = Vector{Float64}(undef, nf)
     if nt > 1
@@ -425,7 +442,7 @@ function _max_intensities!(intensities, imgs, lo, hi)
     end
 end
 
-function max_intensities(imgs::AbstractArray{<:Any, 3}; nt = Threads.nthreads())
+function max_intensities(imgs::AbstractArray{<:Any, 3}; nt = nthreads())
     nf = size(imgs, 3)
     intensities = similar(imgs, (nf,))
     if nt > 1
@@ -448,7 +465,7 @@ function clip_imgs(imgs; x = :, y = :)
     view(imgs, x, y, 1:nf)
 end
 
-function find_segments_thr(imgs, thr; nt = Threads.nthreads())
+function find_segments_thr(imgs, thr; nt = nthreads())
     intensities = avg_intensities(imgs, nt = nt)
     indices_above_thresh(intensities, thr)
 end
@@ -456,7 +473,7 @@ end
 """
 Assumes images are row-major
 """
-function clip_segments_thr(imgs, thr; nt = Threads.nthreads())
+function clip_segments_thr(imgs, thr; nt = nthreads())
     open_pers = find_segments_thr(imgs, thr, nt = nt)
     nseg = length(open_pers)
     segments = map(1:nseg) do segno
@@ -600,6 +617,131 @@ end
 function lut_maxrange(imgstack::AbstractArray{T, 3}, newmax = nothing) where T
     minval, maxval = extrema(imgstack)
     lut_maxrange(minval, maxval, newmax)
+end
+
+function determine_container_depth(maxval::N6f10)
+    maxval_8bit = reinterpret(N6f10, reinterpret(one(N8f8)))
+    maxval <= maxval_8bit ? N0f8 : N6f10
+end
+
+determine_container_depth(maxval) = maxval <= typemax(UInt8) ? N0f8 : N6f10
+
+larger_container_type(::Type{T}, ::Type{T}) where T = T
+larger_container_type(::Type{Base.Bottom}, ::Type{T}) where T = T
+larger_container_type(::Type{T}, ::Type{Base.Bottom}) where T = T
+larger_container_type(::Type{Base.Bottom}, ::Type{Base.Bottom}) = Base.Bottom
+function larger_container_type(::Type{S}, ::Type{T}) where {S,T}
+    larger_container_type(larger_container_rule(S, T), larger_container_rule(T, S))
+end
+
+larger_container_rule(::Type{<:Any}, ::Type{<:Any}) = Base.Bottom
+function larger_container_rule(::Type{X}, ::Type{Y}) where {A, f, X<:Normed{A, f},
+                                                            B, g, Y<:Normed{B, g}}
+    if f < g
+        T = Y
+    elseif f == g
+        # Prefer smaller containers with the same bit depth
+        T = sizeof(A) < sizeof(B) ? X : Y
+    else
+        T = X
+    end
+    T
+end
+
+function max_container_depth(maxvals)
+    mapreduce(determine_container_depth, larger_container_type,
+              maxvals, init = N0f8)
+end
+
+function _frame_sum_intensity(f, ::Type{T}, img_raw, roi_xr, roi_yr) where T
+    accum = zero(T)
+    @inbounds for yi in eachindex(roi_yr)
+        for xi in eachindex(roi_xr)
+            intensity = f(img_raw[roi_xr[xi], roi_yr[yi]])
+            accum += intensity
+        end
+    end
+    accum
+end
+
+function frame_sum_intensity(f, ::Type{T}, img_raw::AbstractArray;
+                             roi_xr = 1:size(img_raw, 1),
+                             roi_yr = 1:size(img_raw, 2), nt = nthreads()) where T
+    if nt > 1
+        ny = length(roi_yr)
+        blksize = cld(ny, nt)
+        tasks = Vector{Task}(undef, nt)
+        @inbounds for tno in 1:nt
+            lo = (tno - 1) * blksize + first(roi_yr)
+            hi = min(first(roi_yr) + tno * blksize - 1, last(roi_yr))
+            tasks[tno] = @spawn _frame_sum_intensity(f, T, img_raw, roi_xr, lo:hi)
+        end
+        accum = zero(T)
+        @inbounds for tno in 1:nt
+            accum += fetch(tasks[tno])::T
+        end
+    else
+        accum = _frame_sum_intensity(f, T, img_raw, roi_xr, roi_yr)
+    end
+    accum
+end
+
+function frame_sum_intensity(f::typeof(identity),
+                             img_raw::AbstractArray{UInt16}; kwargs...)
+    frame_sum_intensity(f, UInt64, img_raw; kwargs...)
+end
+
+frame_sum_intensity(img_raw; kwargs...) = frame_sum_intensity(identity, img_raw; kwargs...)
+
+frame_avg_intensity(f, img_raw::AbstractArray, norm; kwargs...) =
+    norm * frame_sum_intensity(f, img_raw; kwargs...)
+
+function frame_avg_intensity(f, img_raw; roi_xr = 1:size(img_raw, 1),
+                    roi_yr = 1:size(img_raw, 2), kwargs...)
+    norm = get_norm(roi_xr, roi_yr)
+    frame_avg_intensity(f, img_raw, norm; roi_xr, roi_yr, kwargs...)
+end
+
+frame_avg_intensity(img_raw::AbstractArray, args...; kwargs...) =
+    frame_avg_intensity(identity, img_raw, args...; kwargs...)
+
+function get_norm(nx::Integer, ny::Integer)
+    npx = nx * ny
+    1 / (reinterpret(N6f10(1)) * npx)
+end
+get_norm(roi_x::AbstractUnitRange, roi_y::AbstractUnitRange) =
+    get_norm(length(roi_x), length(roi_y))
+get_norm(roi_x::Slice, roi_y::Slice) = get_norm(length(roi_x), length(roi_y))
+get_norm(img::AbstractMatrix) = get_norm(size(img)...)
+
+function _maxval_min_max_frames(roi_min, roi_max, ib, ie)
+    subtr_mv = typemin(eltype(roi_min))
+    @inbounds @simd ivdep for i in ib:ie
+        subtr_mv = max(roi_max[i] - roi_min[i], subtr_mv)
+    end
+    subtr_mv
+end
+
+function maxval_min_max_frames(roi_min::AbstractArray{T}, roi_max, nt = nthreads()) where T
+    nel = length(roi_min)
+    if nt > 1
+        blksize = cld(nel, nt)
+        tasks = Vector{Task}(undef, nt)
+        for tno in 1:nt
+            lo = (tno - 1) * blksize + 1
+            hi = min(tno * blksize, nel)
+            @inbounds tasks[tno] = @spawn _maxval_min_max_frames(roi_min,
+                                                                 roi_max, lo, hi)
+        end
+        subtr_mv = typemin(T)
+        for tno in 1:nt
+            this_mv = fetch(tasks[tno])::T
+            subtr_mv = max(this_mv, subtr_mv)
+        end
+    else
+        subtr_mv = _maxval_min_max_frames(roi_min, roi_max, 1, nel)
+    end
+    subtr_mv
 end
 
 end # module
