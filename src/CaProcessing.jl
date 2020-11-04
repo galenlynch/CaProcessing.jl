@@ -69,7 +69,8 @@ function pixel_lut(f, ::Type{T}, r::AbstractRange, lowval, hival) where T
 end
 
 function pixel_lut(f, r::AbstractRange)
-    isempty(r) && throw(ArgumentError("Must specify type and end values if r is empty"))
+    isempty(r) &&
+        throw(ArgumentError("Must specify type and end values if r is empty"))
     lowval = f(first(r))
     hival = f(last(r))
     T = typeof(lowval)
@@ -400,9 +401,9 @@ end
 
 demin!(imgs; kwargs...) = demin!(imgs, imgs; kwargs...)
 
-function demin(imgs; parentdir = tempdir(), kwargs...)
-    if !isempty(parentdir) && isdir(parentdir)
-        mpath, mio = mktemp(parentdir)
+function demin(imgs; scratch_dir = tempdir(), kwargs...)
+    if !isempty(scratch_dir) && isdir(scratch_dir)
+        mpath, mio = mktemp(scratch_dir)
         dest = Mmap.mmap(mio, Array{eltype(imgs), 3}, size(imgs))
         close(mio)
         rm(mpath)
@@ -501,10 +502,17 @@ srgb_gamma_expand(x) = x <= 0.04045 ?
     25 * x / 323 :
     ((200 * x + 11) / 211)^(12 / 5)
 
+rawval(x::Normed) = reinterpret(x)
+rawval(x) = x
+
 rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T<:Integer =
     round(T, newmax * float(x - xmin) / (xmax - xmin))
 rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T =
     convert(T, newmax * float(x - xmin) / (xmax - xmin))
+
+rescale_brightness(::Type{T}, x::T, xmin, xmax, newmax) where {X, T<:Normed{X}} =
+    reinterpret(T, rescale_brightness(X, rawval(x), rawval(xmin),
+                                      rawval(xmax), rawval(newmax)))
 
 rescale_brightness(x::T, xmin, xmax, newmax) where T =
     rescale_brightness(T, x, xmin, xmax, newmax)
@@ -522,9 +530,12 @@ function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T
 end
 gamma_compensate_rescale(x::T, args...) where T = gamma_compensate_rescale(T, x, args...)
 
+px_step_range(b::T, e::T) where T = b:e
+px_step_range(b::T, e::T) where T<:Normed = b:eps(T):e
+px_step_range(b, e) = px_step_range(promote(b, e)...)
+
 function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
-    scale = 1 / maxval
-    r = minval:maxval
+    r = px_step_range(minval, maxval)
     if use_gamma
         lut = pixel_lut(x -> gamma_compensate_rescale(T, x, minval, maxval,
                                                       newmax), r)
@@ -535,8 +546,8 @@ function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) wh
     lut
 end
 
-make_pixel_lut(minv::T, maxv::T, newmax; kwargs...) where T =
-    make_pixel_lut(T, minv, maxv, newmax; kwargs...)
+make_pixel_lut(minv::T, maxv::T, newmax, args...) where T =
+    make_pixel_lut(T, minv, maxv, newmax, args...)
 
 function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
     if use_gamma
@@ -547,8 +558,8 @@ function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) wher
     scale_f
 end
 
-make_scale_f(minv::T, maxv::T, newmax; kwargs...) where T =
-    make_scale_f(T, minv, maxv, newmax; kwargs...)
+make_scale_f(minv::T, maxv::T, newmax, args...) where T =
+    make_scale_f(T, minv, maxv, newmax, args...)
 
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
     scaled_val = srgb_gamma_compress(scale * x)
@@ -691,24 +702,34 @@ function frame_sum_intensity(f::typeof(identity),
     frame_sum_intensity(f, UInt64, img_raw; kwargs...)
 end
 
-frame_sum_intensity(img_raw; kwargs...) = frame_sum_intensity(identity, img_raw; kwargs...)
-
-frame_avg_intensity(f, img_raw::AbstractArray, norm; kwargs...) =
-    norm * frame_sum_intensity(f, img_raw; kwargs...)
-
-function frame_avg_intensity(f, img_raw; roi_xr = 1:size(img_raw, 1),
-                    roi_yr = 1:size(img_raw, 2), kwargs...)
-    norm = get_norm(roi_xr, roi_yr)
-    frame_avg_intensity(f, img_raw, norm; roi_xr, roi_yr, kwargs...)
+function frame_sum_intensity(f::typeof(identity), img_raw::AbstractArray{T};
+                             kwargs...) where {X, T<:Normed{X}}
+    frame_sum_intensity(f, reinterpret(X, img_raw); kwargs...)
 end
 
+frame_sum_intensity(img_raw; kwargs...) = frame_sum_intensity(identity, img_raw; kwargs...)
+
+frame_avg_intensity(f, ::Type{T}, img_raw::AbstractArray, norm;
+                    kwargs...) where T =
+    norm * frame_sum_intensity(f, T, img_raw; kwargs...)
+
+function frame_avg_intensity(f, ::Type{T}, img_raw; roi_xr = 1:size(img_raw, 1),
+                             roi_yr = 1:size(img_raw, 2), kwargs...) where T
+    norm = get_norm(roi_xr, roi_yr)
+    frame_avg_intensity(f, T, img_raw, norm; roi_xr, roi_yr, kwargs...)
+end
+
+frame_avg_intensity(::Type{T}, img_raw::AbstractArray, args...;
+                    kwargs...) where T =
+    frame_avg_intensity(identity, T, img_raw, args...; kwargs...)
 frame_avg_intensity(img_raw::AbstractArray, args...; kwargs...) =
-    frame_avg_intensity(identity, img_raw, args...; kwargs...)
+    frame_avg_intensity(UInt64, img_raw, args...; kwargs...)
 
 function get_norm(nx::Integer, ny::Integer)
     npx = nx * ny
-    1 / (reinterpret(N6f10(1)) * npx)
+    1 / npx
 end
+
 get_norm(roi_x::AbstractUnitRange, roi_y::AbstractUnitRange) =
     get_norm(length(roi_x), length(roi_y))
 get_norm(roi_x::Slice, roi_y::Slice) = get_norm(length(roi_x), length(roi_y))
