@@ -262,21 +262,20 @@ function frames_min_max_accum!(minf, maxf, accf, imgs; nt = nthreads())
     rowrange = 1:nr
     if nt > 1
         blksize = cld(nc, nt)
-        los = Vector{Int}(undef, nt)
-        his = similar(los)
+        colranges = Vector{UnitRange{Int}}(undef, nt)
         @inbounds for tno in 1:nt
-            los[tno] = (tno - 1) * blksize + 1
-            his[tno] = min(tno * blksize, nc)
+            colranges[tno] = (tno - 1) * blksize + 1 : min(tno * blksize, nc)
         end
         tasks = Vector{Task}(undef, nt)
         for fno in 1:nf
             frame_min_max_accum!(minf, maxf, accf, tasks, view(imgs, :, :, fno),
-                                rowrange, los, his)
+                                rowrange, colranges)
         end
     else
+        colrange = 1:nc
         for fno in 1:nf
             _frame_min_max_accum!(minf, maxf, accf, view(imgs, :, :, fno),
-                                  rowrange, 1, nc)
+                                  rowrange, colrange)
         end
     end
     minf, maxf, accf
@@ -301,7 +300,8 @@ end
 function frames_min_max_accum(::Type{S}, imgs::AbstractArray{T, 3};
                             kwargs...) where {S,T<:Unsigned}
     nr, nc, nz = size(imgs)
-    minf, maxf, accf = frames_min_max_accum(S, T, (nr, nc))
+    minf, maxf, accf = frames_min_max_accum_alloc(S, T, (nr, nc))
+    frames_min_max_accum_init!(minf, maxf, accf)
     frames_min_max_accum!(minf, maxf, accf, imgs; kwargs...)
 end
 frames_min_max_accum(imgs; kwargs...) = frames_min_max_accum(UInt32, imgs; kwargs...)
