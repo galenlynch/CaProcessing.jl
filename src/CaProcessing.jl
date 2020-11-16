@@ -8,8 +8,9 @@ import Base: getindex, firstindex, lastindex, size, setindex!, IndexStyle,
 # Stdlib
 using Mmap, Statistics
 # Public packages
-using FixedPointNumbers: Normed, N0f8, N6f10
+using FixedPointNumbers: Normed, N0f8, N6f10, floattype
 using ImageCore: rawview
+using ImageTransformations: restrict
 # Private packages
 using GLUtilities: indices_above_thresh, reduce_extrema
 
@@ -764,5 +765,17 @@ function maxval_min_max_frames(roi_min::AbstractArray{T}, roi_max, nt = nthreads
     end
     subtr_mv
 end
+
+restrict_size(n) = iseven(n) ? div(n, 2) + 1 : div(n + 1, 2)
+
+function restrict_no_edges!(dest, img::AbstractMatrix)
+    halved = restrict(img)
+    dest .= halved[2 : end - 1, 2 : end - 1]
+    dest
+end
+
+restrict_no_edges(img::AbstractArray{T}) where T =
+    restrict_no_edges!(similar(img, floattype(T), restrict_size.(size(img)) .- 2),
+                       img)
 
 end # module
