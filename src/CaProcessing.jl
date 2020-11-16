@@ -14,6 +14,8 @@ using ImageTransformations: restrict
 # Private packages
 using GLUtilities: indices_above_thresh, reduce_extrema
 
+using Colors: Color, Gray, XYZ, RGB, clamp01
+
 export pixel_lut,
     apply_lut,
     apply_lut!,
@@ -777,5 +779,25 @@ end
 restrict_no_edges(img::AbstractArray{T}) where T =
     restrict_no_edges!(similar(img, floattype(T), restrict_size.(size(img)) .- 2),
                        img)
+
+mix_colors(a::XYZ, b::XYZ) =
+    XYZ(clamp01(a.x + b.x), clamp01(a.y + b.y), clamp01(a.z + b.z))
+
+function mix_colors(a::T, b::T) where T<:RGB
+    mixed = mix_colors(convert(XYZ, a), convert(XYZ, b))
+    convert(T, mixed)
+end
+mix_colors(a::RGB, b::RGB) = mix_colors(promote(a, b)...)
+
+mix_colors(a::T, b::Gray) where T<:RGB = mix_colors(a, convert(T, b))
+mix_colors(a::Gray, b::RGB) = mix_colors(b, a)
+
+function circle_coords(x, y, r, xmax, ymax)
+    coords = Vector{NTuple{2, Int}}()
+    xrange = floor(Int, x - r) : ceil(Int, x + r)
+    for xpos in xrange
+        
+    end
+end
 
 end # module
