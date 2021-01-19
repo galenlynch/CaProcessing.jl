@@ -27,9 +27,7 @@ export pixel_lut,
     frames_min_max,
     frames_min_max!,
     frames_min_max_mean,
-    frame_min_max_sum!,
     frames_min_max_accum,
-    freams_min_max_sum!,
     gamma_compensate_rescale,
     map_to_8bit,
     make_scale_f,
@@ -519,6 +517,12 @@ rescale_brightness(x::T, xmin, xmax, newmax) where T =
     rescale_brightness(T, x, xmin, xmax, newmax)
 
 rescale_brightness(x, xmax, newmax) = rescale_brightness(x, 0, xmax, newmax)
+
+rescale_clamp_brightness(::Type{T}, b, e, newmax) where T =
+    rescale_brightness(T, clamp(x, b, e), b, e, newmax)
+
+scale_clamp_f(::Type{T}, b, e, m = typemax(T)) where T =
+    x -> rescale_brightness(T, clamp(x, b, e), b, e, m)
 
 
 function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T <: Integer
