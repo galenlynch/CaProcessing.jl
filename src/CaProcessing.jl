@@ -298,7 +298,7 @@ function frames_min_max_accum_init!(minf::AbstractArray{T},
 end
 
 function frames_min_max_accum(::Type{S}, imgs::AbstractArray{T, 3};
-                            kwargs...) where {S,T<:Unsigned}
+                            kwargs...) where {S,T}
     nr, nc, nz = size(imgs)
     minf, maxf, accf = frames_min_max_accum_alloc(S, T, (nr, nc))
     frames_min_max_accum_init!(minf, maxf, accf)
@@ -651,7 +651,7 @@ function lut_maxrange(imgstack::AbstractArray{T, 3}, newmax = nothing) where T
 end
 
 function determine_container_depth(maxval::N6f10)
-    maxval_8bit = reinterpret(N6f10, reinterpret(one(N8f8)))
+    maxval_8bit = reinterpret(N6f10, convert(UInt16, reinterpret(one(N0f8))))
     maxval <= maxval_8bit ? N0f8 : N6f10
 end
 
