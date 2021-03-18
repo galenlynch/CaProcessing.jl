@@ -23,6 +23,7 @@ export pixel_lut,
     demin,
     demin!,
     find_segments_thr,
+    find_mean_and_scale_fun,
     frame_min_max!,
     frames_min_max,
     frames_min_max!,
@@ -314,6 +315,20 @@ function frames_min_max_mean(::Type{S}, ::Type{T}, imgs; kwargs...) where {S,T}
     minf, maxf, meanf
 end
 frames_min_max_mean(imgs; kwargs...) = frames_min_max_mean(Float32, UInt32, imgs; kwargs...)
+
+function find_mean_and_scale_fun(::Type{T}, signal, newmax, usegamma = false
+                                 ) where T
+    minf, maxf, meanf = frames_min_max_mean(signal)
+    minv = typemax(eltype(meanf))
+    maxv = typemin(minv)
+    @inbounds for i in eachindex(meanf)
+        meanval = meanf[i]
+        minv = min(minv, minf[i] - meanval)
+        maxv = max(maxv, maxf[i] - meanval)
+    end
+    f = make_scale_f(T, minv, maxv, newmax, usegamma)
+    f, meanf
+end
 
 function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
     for cno in lo:hi
