@@ -797,4 +797,226 @@ restrict_no_edges(img::AbstractArray{T}) where T =
     restrict_no_edges!(similar(img, floattype(T), restrict_size.(size(img)) .- 2),
                        img)
 
+function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
+                           stack::AbstractArray{<:Any, 3}, fno, colrange,
+                           rowrange, ref_frame::AbstractMatrix) where T
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            dest[r, c] = pixel_f(stack[r, c, fno], ref_frame[r, c])
+        end
+    end
+    nothing
+end
+
+function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
+                           stack::AbstractArray{<:Any, 3}, fno, colrange,
+                           rowrange) where T
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            dest[r, c] = pixel_f(stack[r, c, fno])
+        end
+    end
+    nothing
+end
+
+function frame_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
+                    stack::AbstractArray{<:Any, 3}, args...;
+                    nt = nthreads()) where {S, T}
+    nr, nc, nf = size(stack)
+    rowrange = 1:nr
+    if nt > 1
+        colranges = splits(1:nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for fno in 1:nf
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack,
+                                                      fno, colranges[tno], rowrange,
+                                                      dest)
+            end
+            foreach(wait, tasks)
+        end
+    else
+        colrange = 1:nc
+        for fno in 1:nf
+            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange, dest)
+        end
+    end
+    dest
+end
+
+function frame_sink_map!(frame_sink_f::S, pixel_f::T, dest::AbstractMatrix{<:Any},
+                    stack::AbstractArray{<:Any, 3}, args...;
+                    nt = nthreads()) where {S, T}
+    nr, nc, nf = size(stack)
+    rowrange = 1:nr
+    if nt > 1
+        colranges = splits(1:nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for fno in 1:nf
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack,
+                                                    fno, colranges[tno], rowrange,
+                                                    args...)
+            end
+            foreach(wait, tasks)
+            frame_sink_f(dest, fno)
+        end
+    else
+        colrange = 1:nc
+        for fno in 1:nf
+            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange, args...)
+            frame_sink_f(dest, fno)
+        end
+    end
+    nothing
+end
+
+function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
+                     stack::AbstractArray{<:Any, 3}, fno, colrange,
+                     rowrange, ref_frame::AbstractMatrix) where T
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            dest[r, c, fno] = pixel_f(stack[r, c, fno], ref_frame[r, c])
+        end
+    end
+    nothing
+end
+
+function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
+                     stack::AbstractArray{<:Any, 3}, fno, colrange,
+                     rowrange) where T
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            dest[r, c, fno] = pixel_f(stack[r, c, fno])
+        end
+    end
+    nothing
+end
+
+function stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
+                    stack::AbstractArray{<:Any, 3}, args...; nt = nthreads()) where T
+    nr, nc, nf = size(stack)
+    rowrange = 1:nr
+    if nt > 1
+        colranges = splits(1:nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for fno in 1:nf
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn _stack_map!(pixel_f, dest, stack, fno,
+                                                colranges[tno], rowrange,
+                                                args...)
+            end
+            foreach(wait, tasks)
+        end
+    else
+        colrange = 1:nc
+        for fno in 1:nf
+            _stack_map!(pixelf, dest, stack, fno, colrange, rowrange, args...)
+        end
+    end
+    nothing
+
+end
+
+function __stack_temporal_downsample_accum!(ds, stack, dstframe, srcframe,
+                                            colrange, rowrange)
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            ds[r, c, dstframe] += stack[r, c, srcframe]
+        end
+    end
+end
+
+function __stack_temporal_downsample_scale!(ds, factor, fno, colrange, rowrange)
+    for c in colrange
+        @inbounds @simd for r in rowrange
+            ds[r, c, fno] /= factor
+        end
+    end
+end
+
+function _stack_temporal_downsample!(ds, stack, factor; nt = nthreads())
+    nr, nc, nff = size(ds)
+    rowrange = 1:nr
+    if nt > 1
+        colranges = splits(1:nc, nt)
+        tasks = Vector{Task}(undef, nt)
+        for i in 1:nff
+            for j in 1:factor
+                srcframe = factor * (i - 1) + j
+                @inbounds for tno in 1:nt
+                    tasks[tno] = @spawn __stack_temporal_downsample_accum!(
+                        ds, stack, i, srcframe, colranges[tno], rowrange
+                    )
+                end
+                foreach(wait, tasks)
+            end
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn __stack_temporal_downsample_scale!(
+                    ds, factor, i, colranges[tno], rowrange
+                )
+            end
+            foreach(wait, tasks)
+        end
+    else
+        colrange = 1:nc
+        for i in 1:nff
+            for j in 1:factor
+                srcframe = factor * (i - 1) + j
+                __stack_temporal_downsample_accum!(ds, stack, i, srcframe,
+                                                   colrange, rowrange)
+            end
+            __stack_temporal_downsample_scale!(ds, factor, i, colrange, rowrange)
+        end
+    end
+    ds
+end
+
+function stack_temporal_downsample!(ds, stack, factor; kwargs...)
+    nr_ds, nc_ds, nff = size(ds)
+    nr, nc, nf = size(stack)
+    size_ok = nr_ds == nr && nc_ds == nc && nff * factor >= nf
+    if ! size_ok
+        throw(ArgumentError("Sizes mismatched"))
+    end
+    _stack_temporal_downsample!(ds, stack, factor; kwargs...)
+end
+
+function stack_temporal_downsample(::Type{T}, stack, factor;
+                                   nt = nthreads()) where T
+    nr, nc, nf = size(stack)
+    nff = fld(nf, factor)
+    ds = zeros(T, nr, nc, nff)
+    _stack_temporal_downsample!(ds, stack, factor; nt)
+end
+
+stack_temporal_downsample(stack, factor; kwargs...) =
+    stack_temporal_downsample(Float32, stack, factor; kwargs...)
+
+function split_range(splitno, r, nsplit)
+    nel = length(r)
+    len, rem = divrem(nel, nsplit)
+    if len == 0
+        if splitno > rem
+            rem = 0
+        else
+            len, rem = 1, 0
+        end
+    end
+    f = first(r) + ((splitno-1) * len)
+    l = f + len - 1
+    if rem > 0
+        if splitno <= rem
+            f = f + (splitno - 1)
+            l = l + splitno
+        else
+            f = f + rem
+            l = l + rem
+        end
+    end
+    return f:l
+end
+
+splits(r, nsplit) = map(x -> split_range(x, r, nsplit), 1:nsplit)
+
 end # module
