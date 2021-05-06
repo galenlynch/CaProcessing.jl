@@ -37,6 +37,8 @@ export pixel_lut,
     srgb_gamma_compress,
     srgb_gamma_expand,
     rescale_brightness,
+    rescale_clamp_brightness,
+    rescale_replace_brightness,
     rescale_compress,
     rescale_compress_img,
     rescale_compress_img!,
@@ -537,8 +539,13 @@ rescale_brightness(x::T, xmin, xmax, newmax) where T =
 
 rescale_brightness(x, xmax, newmax) = rescale_brightness(x, 0, xmax, newmax)
 
-rescale_clamp_brightness(::Type{T}, b, e, newmax) where T =
+rescale_clamp_brightness(::Type{T}, x, b, e, newmax) where T =
     rescale_brightness(T, clamp(x, b, e), b, e, newmax)
+
+function rescale_replace_brightness(::Type{T}, x, b, e, fillval,
+                                    newmax = typemax(T)) where T
+    rescale_brightness(T, ifelse(b <= x <= e, x, fillval), b, e, newmax)
+end
 
 scale_clamp_f(::Type{T}, b, e, m = typemax(T)) where T =
     x -> rescale_brightness(T, clamp(x, b, e), b, e, m)
