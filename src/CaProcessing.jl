@@ -314,7 +314,11 @@ function frames_min_max_mean(::Type{S}, ::Type{T}, imgs; kwargs...) where {S,T}
     meanf .= accf ./ nf
     minf, maxf, meanf
 end
-frames_min_max_mean(imgs; kwargs...) = frames_min_max_mean(Float32, UInt32, imgs; kwargs...)
+frames_min_max_mean(imgs::AbstractArray{<:Integer}; kwargs...) =
+    frames_min_max_mean(Float32, UInt32, imgs; kwargs...)
+frames_min_max_mean(imgs::AbstractArray{<:AbstractFloat}; kwargs...) =
+    frames_min_max_mean(Float32, Float64, imgs; kwargs...)
+
 
 function find_mean_and_scale_fun(::Type{T}, signal, newmax, usegamma = false
                                  ) where T
@@ -829,8 +833,8 @@ function frame_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
         tasks = Vector{Task}(undef, nt)
         for fno in 1:nf
             @inbounds for tno in 1:nt
-                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack,
-                                                      fno, colranges[tno], rowrange,
+                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack, fno,
+                                                      colranges[tno], rowrange,
                                                       dest)
             end
             foreach(wait, tasks)
@@ -844,9 +848,10 @@ function frame_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
     dest
 end
 
-function frame_sink_map!(frame_sink_f::S, pixel_f::T, dest::AbstractMatrix{<:Any},
-                    stack::AbstractArray{<:Any, 3}, args...;
-                    nt = nthreads()) where {S, T}
+function frame_sink_map!(frame_sink_f::S, pixel_f::T,
+                         dest::AbstractMatrix{<:Any},
+                         stack::AbstractArray{<:Any, 3}, args...;
+                         nt = nthreads()) where {S, T}
     nr, nc, nf = size(stack)
     rowrange = 1:nr
     if nt > 1
@@ -854,9 +859,9 @@ function frame_sink_map!(frame_sink_f::S, pixel_f::T, dest::AbstractMatrix{<:Any
         tasks = Vector{Task}(undef, nt)
         for fno in 1:nf
             @inbounds for tno in 1:nt
-                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack,
-                                                    fno, colranges[tno], rowrange,
-                                                    args...)
+                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack, fno,
+                                                      colranges[tno], rowrange,
+                                                      args...)
             end
             foreach(wait, tasks)
             frame_sink_f(dest, fno)
@@ -864,7 +869,8 @@ function frame_sink_map!(frame_sink_f::S, pixel_f::T, dest::AbstractMatrix{<:Any
     else
         colrange = 1:nc
         for fno in 1:nf
-            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange, args...)
+            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange,
+                              args...)
             frame_sink_f(dest, fno)
         end
     end
