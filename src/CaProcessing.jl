@@ -12,7 +12,7 @@ using FixedPointNumbers: Normed, N0f8, N6f10, floattype
 using ImageCore: rawview
 using ImageTransformations: restrict
 # Private packages
-using GLUtilities: indices_above_thresh, reduce_extrema
+using GLUtilities: indices_above_thresh, reduce_extrema, clip_interval_duration
 
 export pixel_lut,
     apply_lut,
@@ -45,6 +45,8 @@ export pixel_lut,
     subtract_frame,
     subtract_frame!,
     subtract_frames
+
+include("median_filter.jl")
 
 struct PixelLUT{T} <: AbstractArray{T,1}
     vals::Vector{T}
