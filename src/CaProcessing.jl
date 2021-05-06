@@ -1034,4 +1034,150 @@ end
 
 splits(r, nsplit) = map(x -> split_range(x, r, nsplit), 1:nsplit)
 
+function _initialize_median_filters!(filterbank, inb, xr, yr, fr)
+    for y in yr
+        @inbounds for x in xr
+            initialize_filter!(filterbank[x, y], view(inb, x, y, fr))
+        end
+    end
+end
+
+function _get_medians!(b, filterbank, xr, yr)
+    for y in yr
+        @inbounds for x in xr
+            b[x, y] = get_median_value(filterbank[x, y])
+        end
+    end
+end
+
+function _update_medians!(filterbank, enteringb, exitingb, xr, yr)
+    for y in yr
+        @inbounds for x in xr
+            update_filter!(filterbank[x, y], enteringb[x, y], exitingb[x, y])
+        end
+    end
+end
+
+function _update_subtract_medians!(outb, filterbank, refb, enteringb, exitingb,
+                                   xr, yr)
+    for y in yr
+        @inbounds for x in xr
+            update_filter!(filterbank[x, y], enteringb[x, y], exitingb[x, y])
+            outb[x, y] = refb[x, y] - get_median_value(filterbank[x, y])
+        end
+    end
+end
+
+function median_filter_frames!(outb,
+                               filterbank::AbstractMatrix{<:MedianFilter},
+                               inb; nt = nthreads())
+    insz = size(inb)
+    insz == size(outb) || throw(ArgumentError("data sizes do not match"))
+    nx, ny, nf = size(inb)
+    size(filterbank) == (nx, ny) || throw(ArugmentError("filter size does not match"))
+    nx == 0 || ny == 0 && return outb
+    xr = 1:nx
+    half_win = div(first(filterbank).count - 1, 2)
+    init_range = centered_range(1, half_win, nf)
+    medbuff = Matrix{Float64}(undef, nx, ny)
+    if nt > 1
+        yranges = splits(1:ny, nt)
+        tasks = Vector{Task}(undef, nt)
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn(
+                _initialize_median_filters!(filterbank, inb, xr, yranges[tno],
+                                           init_range)
+            )
+        end
+        foreach(wait, tasks)
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn _get_medians!(medbuff, filterbank, xr, yranges[tno])
+        end
+        foreach(wait, tasks)
+        for i in 1 : half_win + 1
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn(
+                    _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i),
+                                     medbuff, xr, first(yranges[tno]),
+                                     last(yranges[tno]))
+                )
+            end
+            foreach(wait, tasks)
+        end
+        for i in half_win + 2 : nf - half_win - 1
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn(
+                    _update_subtract_medians!(view(outb, :, :, i), filterbank,
+                                              view(inb, :, :, i),
+                                              view(inb, :, :, i + half_win),
+                                              view(inb, :, :, i - half_win - 1),
+                                              xr, yranges[tno])
+                )
+            end
+            foreach(wait, tasks)
+        end
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn(
+                _update_medians!(filterbank, view(inb, :, :, nf),
+                                 view(inb, :, :, nf - 2 * half_win - 1), xr,
+                                 yranges[tno])
+            )
+        end
+        foreach(wait, tasks)
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn _get_medians!(medbuff, filterbank, xr, yranges[tno])
+        end
+        for i in nf - half_win : nf
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn(
+                    _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i),
+                                     medbuff, xr, first(yranges[tno]),
+                                     last(yranges[tno]))
+                )
+            end
+            foreach(wait, tasks)
+        end
+    else
+        yrange = 1:ny
+        _initialize_median_filters!(filterbank, inb, xr, yrange, init_range)
+        _get_medians!(medbuff, filterbank, xr, yrange)
+        @inbounds for i in 1 : half_win + 1
+            _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i), medbuff,
+                             xr, 1, ny)
+        end
+        @inbounds for i in half_win + 2 : nf - half_win - 1
+            _update_subtract_medians!(view(outb, :, :, i), filterbank,
+                                      view(inb, :, :, i),
+                                      view(inb, :, :, i + half_win),
+                                      view(inb, :, :, i - half_win - 1), xr,
+                                      yrange)
+        end
+        _update_medians!(filterbank, view(inb, :, :, nf),
+                         view(inb, :, :, nf - 2 * half_win - 1), xr, yrange)
+        _get_medians!(medbuff, filterbank, xr, yrange)
+        for i in nf - half_win : nf
+            _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i), medbuff,
+                             xr, 1, ny)
+        end
+    end
+    outb
+end
+
+function median_filter_frames!(outb, inb::AbstractArray, filter_npt,
+                               valrange::AbstractRange{T}; discrete = false,
+                               kwargs...) where T<:Number
+    nx, ny, nf = size(inb)
+    half_win = div(filter_npt - 1, 2)
+    nwin = 2 * half_win + 1
+    if discrete
+        filterbank = Matrix{MedianFilter{T, true}}(undef, nx, ny)
+    else
+        filterbank = Matrix{MedianFilter{T, false}}(undef, nx, ny)
+    end
+    for i in eachindex(filterbank)
+        filterbank[i] = MedianFilter(valrange, nwin, discrete)
+    end
+    median_filter_frames!(outb, filterbank, inb; kwargs...)
+end
+
 end # module
