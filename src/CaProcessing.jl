@@ -94,11 +94,13 @@ function pixel_lut(raw_vals::AbstractVector{T}, lowerbnd = 0) where T
     PixelLUT(vals, lowerbnd)
 end
 
-@inline function getindex(a::PixelLUT, i)
+@inline function getindex(a::PixelLUT, i::Integer)
     i_raw = i - a.lowerbnd + 2
     i_clamp = clamp(i_raw, 1, length(a.vals))
     @inbounds a.vals[i_clamp]
 end
+
+@inline getindex(a::PixelLUT, i::Real) = getindex(a, round(Int, i))
 
 @inline getindex(a::PixelLUT, i::Normed) = a[reinterpret(i)]
 
