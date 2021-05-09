@@ -14,7 +14,7 @@ using ImageTransformations: restrict
 # Private packages
 using GLUtilities: indices_above_thresh, reduce_extrema, clip_interval_duration
 
-export pixel_lut,
+export MedianFilter,
     apply_lut,
     apply_lut!,
     avg_intensities,
@@ -30,21 +30,26 @@ export pixel_lut,
     frames_min_max_mean,
     frames_min_max_accum,
     gamma_compensate_rescale,
+    get_median_value,
+    initialize_filter!,
     map_to_8bit,
     make_scale_f,
     make_pixel_lut,
     max_intensities,
-    srgb_gamma_compress,
-    srgb_gamma_expand,
+    median_filter_frames!,
+    pixel_lut,
     rescale_brightness,
     rescale_clamp_brightness,
     rescale_replace_brightness,
     rescale_compress,
     rescale_compress_img,
     rescale_compress_img!,
+    srgb_gamma_compress,
+    srgb_gamma_expand,
     subtract_frame,
     subtract_frame!,
-    subtract_frames
+    subtract_frames,
+    update_filter!
 
 include("median_filter.jl")
 
