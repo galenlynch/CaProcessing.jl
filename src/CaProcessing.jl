@@ -138,6 +138,139 @@ apply_lut!(lut, src; kwargs...) = apply_lut!(lut, src, src; kwargs...)
 
 apply_lut(lut, arr; kwargs...) = apply_lut!(lut, similar(arr), arr; kwargs...)
 
+function __frame_closure_map(f::T, yr::AbstractVector, xr::AbstractVector,
+                             frameno::Integer) where T
+    for y in yr
+        @inbounds @simd for x in xr
+            f(x, y, frameno)
+        end
+    end
+end
+
+function unsafe_frame_closure_map!(f, tasks::AbstractVector{Task},
+                             yranges::AbstractVector{<:AbstractVector},
+                             xr::AbstractVector, frameno::Integer)
+    nt = length(tasks)
+    if nt > 0
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr,
+                                                    frameno)
+        end
+        foreach(wait, tasks)
+    else
+        @inbounds __frame_closure_map(f, yranges[1], xr, frameno)
+    end
+    dest
+end
+
+function unsafe_frames_closure_map!(f, tasks::AbstractVector{Task},
+                                    yranges::AbstractVector{<:AbstractVector},
+                                    xr::AbstractVector, fr::AbstractVector)
+    nt = length(tasks)
+    if nt > 0
+        for fno in fr
+            @inbounds for tno in 1:nt
+                tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr,
+                                                        fno)
+            end
+            foreach(wait, tasks)
+        end
+    else
+        yr = yranges[1]
+        for fno in fr
+            @inbounds __frame_closure_map(f, yr, xr, fno)
+        end
+    end
+end
+
+function __frame_ref_map!(f::T, dest::AbstractArray, src::AbstractArray,
+                          ref::AbstractMatrix, yr::AbstractVector,
+                          xr::AbstractVector, frameno::Integer) where T
+    for y in yr
+        @inbounds @simd for x in xr
+            dest[x, y, frameno] = f(src[x, y, frameno], ref[x, y])
+        end
+    end
+end
+
+function _frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
+                         src::AbstractArray, ref::AbstractMatrix,
+                         yranges::AbstractVector{<:AbstractVector},
+                         xr::AbstractVector, frameno::Integer)
+    nt = length(tasks)
+    if nt > 0
+        @inbounds for tno in 1:nt
+            tasks[tno] = @spawn __frame_ref_map!(f, dest, src, ref,
+                                                 yranges[tno], xr, frameno)
+        end
+        foreach(wait, tasks)
+    else
+        @inbounds __frame_ref_map!(f, dest, src, ref, yranges[1], xr, frameno)
+    end
+    dest
+end
+
+function frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
+                        src::AbstractArray, ref::AbstractMatrix,
+                        yranges::AbstractVector{<:AbstractVector},
+                        xr::AbstractVector, frameno::Integer = 1;
+                        nt = nthreds())
+    nt = length(tasks)
+    if length(yranges) < ifelse(nt > 0, nt, 1)
+        throw(ArgumentError("yranges not long enough"))
+    end
+    nd = ndims(dest)
+    nd > 1 || throw(ArgumentError("dest must be at least a matrix"))
+    nd == ndims(src) || throw(ArgumentError("src must be the same number of dimensions as dest"))
+    dsz = size(dest)
+    nx, ny = dsz[1], dsz[2]
+    ssz = size(src)
+    if (nx != ssz[1]) | (ny != ssz[2])
+        throw(ArgumentError(
+            "src and dest have different sizes in the first two dimensions"
+        ))
+    end
+    if nd > 2
+        if dsz[3] != ssz[3]
+            throw(ArgumentError(
+                "src and dest are not the same size in third dimension"
+            ))
+        end
+        frameno <= ssz[3] || throw(ArgumentError("frameno exceeds third dimension"))
+    end
+    (nx, ny) == size(ref) || throw(ArgumentError("ref frame not the right size"))
+    if (first(xr) < 1) | (last(xr) > ssz[1])
+        throw(ArgumentError("xr out of bounds"))
+    end
+    for yr in yranges
+        if (first(yr) < 1) | (last(yr) > ssz[2])
+            throw(ArgumentError("yrs out of bounds"))
+        end
+    end
+    _frame_ref_map!(f, dest, tasks, src, ref, yranges, xr, frameno)
+end
+
+function frame_ref_map!(f, dest::AbstractArray, src::AbstractArray,
+                        ref::AbstractMatrix, frameno::Integer = 1;
+                        nt = nthreads())
+    tasks, yranges, xr = plan_frame_map(dest, nt)
+    frame_ref_map!(f, dest, tasks, src, ref, yranges, xr, frameno; nt)
+end
+
+function plan_frame_map(nx::Integer, ny::Integer, nt::Integer)
+    if nt > 1
+        tasks = Vector{Task}(undef, nt)
+        yranges = splits(1:ny, nt)
+    else
+        tasks = Vector{Task}()
+        yranges = [UnitRange(1, ny)]
+    end
+    xr = 1:nx
+    tasks, yranges, xr
+end
+
+plan_frame_map(src::AbstractArray, nt) = plan_frame_map(size(src)[1:2]..., nt)
+
 function frame_min(imgs::AbstractArray{T, 3}) where T
     nr, nc, nf = size(imgs)
     reduced_frames = reduce(min, imgs; dims = (3,), init = typemax(T))
