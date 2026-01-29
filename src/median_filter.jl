@@ -79,7 +79,7 @@ function update_filter!(m::MedianFilter, entering, exiting)
         m.cumulative[binno] += d
     end
     lastpos = m.last_median_pos
-    if lastpos in start_bin:stop_bin
+    if start_bin <= lastpos <= stop_bin
         half_pos = div(m.count + 1, 2)
         @inbounds goright = m.cumulative[lastpos] < half_pos
         if goright
