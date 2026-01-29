@@ -1,20 +1,23 @@
 name = "CaProcessing"
 uuid = "5d3dd9f5-cffe-4d9b-8768-e5b1153cff1e"
-authors = ["Galen Lynch <galen.lynch@gmail.com>"]
-version = "0.1.7"
+version = "0.1.8"
+authors = ["Galen Lynch <galen@galenlynch.com>"]
 
 [deps]
 FixedPointNumbers = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
-GLUtilities = "8b4c6747-1f02-570a-a961-a96037df41d6"
+ImageBase = "c817782e-172a-44cc-b673-b171935fbb9e"
 ImageCore = "a09fc81d-aa75-5fe9-8630-4744c3626534"
-ImageTransformations = "02fcd773-0e25-5acc-982a-7f6622650795"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+SignalIndices = "18f53e89-494d-4131-905c-653e8ada6cd8"
+SortedIntervals = "b6c59e15-8662-4f8a-b157-cd910e143dcd"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
 FixedPointNumbers = "0.8"
-GLUtilities = "0.2"
-ImageCore = "0.8"
+ImageBase = "0.1"
+ImageCore = "0.10"
+SignalIndices = "0.1"
+SortedIntervals = "0.1"
 julia = "1.3"
 
 [extras]
