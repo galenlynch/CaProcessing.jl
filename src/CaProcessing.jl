@@ -2,8 +2,17 @@ module CaProcessing
 
 using Base.Threads: @spawn, nthreads
 
-import Base: getindex, firstindex, lastindex, size, setindex!, IndexStyle,
-    axes, axes1, IdentityUnitRange, Slice
+import Base:
+    getindex,
+    firstindex,
+    lastindex,
+    size,
+    setindex!,
+    IndexStyle,
+    axes,
+    axes1,
+    IdentityUnitRange,
+    Slice
 
 # Stdlib
 using Mmap, Statistics
@@ -67,35 +76,34 @@ Construct a [`PixelLUT`](@ref) by applying `f` to each element of `r`, and
 converting the result to type `T`. Values below and above `r` will be mapped
 onto `lowval` and `highval`, respectively.
 """
-function pixel_lut(f, ::Type{T}, r::AbstractRange, lowval, hival) where T
+function pixel_lut(f, ::Type{T}, r::AbstractRange, lowval, hival) where {T}
     vals = Vector{T}(undef, length(r) + 2)
     @inbounds vals[1] = lowval
     @inbounds for (i, x) in enumerate(r)
-        vals[i + 1] = f(x)
+        vals[i+1] = f(x)
     end
     @inbounds vals[end] = hival
     PixelLUT(vals, first(r))
 end
 
 function pixel_lut(f, r::AbstractRange)
-    isempty(r) &&
-        throw(ArgumentError("Must specify type and end values if r is empty"))
+    isempty(r) && throw(ArgumentError("Must specify type and end values if r is empty"))
     lowval = f(first(r))
     hival = f(last(r))
     T = typeof(lowval)
     pixel_lut(f, T, r, lowval, hival)
 end
 
-pixel_lut(f, i::T) where T<:Integer = pixel_lut(f, zero(T):i)
-pixel_lut(f, i::T) where T<:Normed = pixel_lut(f, zero(T):eps(T):i)
+pixel_lut(f, i::T) where {T<:Integer} = pixel_lut(f, zero(T):i)
+pixel_lut(f, i::T) where {T<:Normed} = pixel_lut(f, zero(T):eps(T):i)
 
-function pixel_lut(raw_vals::AbstractVector{T}, lowerbnd = 0) where T
+function pixel_lut(raw_vals::AbstractVector{T}, lowerbnd = 0) where {T}
     nraw = length(raw_vals)
     nraw > 0 || throw(ArgumentError("raw_vals cannot be empty"))
     vals = similar(raw_vals, (nraw + 2,))
     @inbounds vals[1] = raw_vals[1]
     unsafe_copyto!(vals, 2, raw_vals, 1, nraw)
-    @inbounds vals[nraw + 2] = raw_vals[nraw]
+    @inbounds vals[nraw+2] = raw_vals[nraw]
     PixelLUT(vals, lowerbnd)
 end
 
@@ -112,11 +120,10 @@ end
 setindex!(::PixelLUT, ::Any) = throw(ReadOnlyMemoryError())
 size(a::PixelLUT) = (length(a.vals) - 2,)
 IndexStyle(::Type{PixelLUT}) = IndexLinear()
-axes(a::PixelLUT) =
-    (IdentityUnitRange(a.lowerbnd:a.lowerbnd + length(a.vals) - 3),)
+axes(a::PixelLUT) = (IdentityUnitRange(a.lowerbnd:(a.lowerbnd+length(a.vals)-3)),)
 
 function _apply_lut!(lut, dest, src, lo, hi)
-    @inbounds @simd ivdep for elno in lo:hi
+    @inbounds @simd ivdep for elno = lo:hi
         dest[elno] = lut[src[elno]]
     end
 end
@@ -127,7 +134,7 @@ function apply_lut!(lut::PixelLUT, dest, src; nt = nthreads())
     if nt > 1
         blksize = cld(nel, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nel)
             @inbounds tasks[tno] = @spawn _apply_lut!(lut, dest, src, lo, hi)
@@ -143,8 +150,12 @@ apply_lut!(lut, src; kwargs...) = apply_lut!(lut, src, src; kwargs...)
 
 apply_lut(lut, arr; kwargs...) = apply_lut!(lut, similar(arr), arr; kwargs...)
 
-function __frame_closure_map(f::T, yr::AbstractVector, xr::AbstractVector,
-                             frameno::Integer) where T
+function __frame_closure_map(
+    f::T,
+    yr::AbstractVector,
+    xr::AbstractVector,
+    frameno::Integer,
+) where {T}
     for y in yr
         @inbounds @simd for x in xr
             f(x, y, frameno)
@@ -152,14 +163,17 @@ function __frame_closure_map(f::T, yr::AbstractVector, xr::AbstractVector,
     end
 end
 
-function unsafe_frame_closure_map!(f, tasks::AbstractVector{Task},
-                             yranges::AbstractVector{<:AbstractVector},
-                             xr::AbstractVector, frameno::Integer)
+function unsafe_frame_closure_map!(
+    f,
+    tasks::AbstractVector{Task},
+    yranges::AbstractVector{<:AbstractVector},
+    xr::AbstractVector,
+    frameno::Integer,
+)
     nt = length(tasks)
     if nt > 0
-        @inbounds for tno in 1:nt
-            tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr,
-                                                    frameno)
+        @inbounds for tno = 1:nt
+            tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr, frameno)
         end
         foreach(wait, tasks)
     else
@@ -168,15 +182,18 @@ function unsafe_frame_closure_map!(f, tasks::AbstractVector{Task},
     dest
 end
 
-function unsafe_frames_closure_map!(f, tasks::AbstractVector{Task},
-                                    yranges::AbstractVector{<:AbstractVector},
-                                    xr::AbstractVector, fr::AbstractVector)
+function unsafe_frames_closure_map!(
+    f,
+    tasks::AbstractVector{Task},
+    yranges::AbstractVector{<:AbstractVector},
+    xr::AbstractVector,
+    fr::AbstractVector,
+)
     nt = length(tasks)
     if nt > 0
         for fno in fr
-            @inbounds for tno in 1:nt
-                tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr,
-                                                        fno)
+            @inbounds for tno = 1:nt
+                tasks[tno] = @spawn __frame_closure_map(f, yranges[tno], xr, fno)
             end
             foreach(wait, tasks)
         end
@@ -188,9 +205,15 @@ function unsafe_frames_closure_map!(f, tasks::AbstractVector{Task},
     end
 end
 
-function __frame_ref_map!(f::T, dest::AbstractArray, src::AbstractArray,
-                          ref::AbstractMatrix, yr::AbstractVector,
-                          xr::AbstractVector, frameno::Integer) where T
+function __frame_ref_map!(
+    f::T,
+    dest::AbstractArray,
+    src::AbstractArray,
+    ref::AbstractMatrix,
+    yr::AbstractVector,
+    xr::AbstractVector,
+    frameno::Integer,
+) where {T}
     for y in yr
         @inbounds @simd for x in xr
             dest[x, y, frameno] = f(src[x, y, frameno], ref[x, y])
@@ -198,15 +221,21 @@ function __frame_ref_map!(f::T, dest::AbstractArray, src::AbstractArray,
     end
 end
 
-function _frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
-                         src::AbstractArray, ref::AbstractMatrix,
-                         yranges::AbstractVector{<:AbstractVector},
-                         xr::AbstractVector, frameno::Integer)
+function _frame_ref_map!(
+    f,
+    dest::AbstractArray,
+    tasks::AbstractVector{Task},
+    src::AbstractArray,
+    ref::AbstractMatrix,
+    yranges::AbstractVector{<:AbstractVector},
+    xr::AbstractVector,
+    frameno::Integer,
+)
     nt = length(tasks)
     if nt > 0
-        @inbounds for tno in 1:nt
-            tasks[tno] = @spawn __frame_ref_map!(f, dest, src, ref,
-                                                 yranges[tno], xr, frameno)
+        @inbounds for tno = 1:nt
+            tasks[tno] =
+                @spawn __frame_ref_map!(f, dest, src, ref, yranges[tno], xr, frameno)
         end
         foreach(wait, tasks)
     else
@@ -215,31 +244,36 @@ function _frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
     dest
 end
 
-function frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
-                        src::AbstractArray, ref::AbstractMatrix,
-                        yranges::AbstractVector{<:AbstractVector},
-                        xr::AbstractVector, frameno::Integer = 1;
-                        nt = nthreds())
+function frame_ref_map!(
+    f,
+    dest::AbstractArray,
+    tasks::AbstractVector{Task},
+    src::AbstractArray,
+    ref::AbstractMatrix,
+    yranges::AbstractVector{<:AbstractVector},
+    xr::AbstractVector,
+    frameno::Integer = 1;
+    nt = nthreds(),
+)
     nt = length(tasks)
     if length(yranges) < ifelse(nt > 0, nt, 1)
         throw(ArgumentError("yranges not long enough"))
     end
     nd = ndims(dest)
     nd > 1 || throw(ArgumentError("dest must be at least a matrix"))
-    nd == ndims(src) || throw(ArgumentError("src must be the same number of dimensions as dest"))
+    nd == ndims(src) ||
+        throw(ArgumentError("src must be the same number of dimensions as dest"))
     dsz = size(dest)
     nx, ny = dsz[1], dsz[2]
     ssz = size(src)
     if (nx != ssz[1]) | (ny != ssz[2])
-        throw(ArgumentError(
-            "src and dest have different sizes in the first two dimensions"
-        ))
+        throw(
+            ArgumentError("src and dest have different sizes in the first two dimensions"),
+        )
     end
     if nd > 2
         if dsz[3] != ssz[3]
-            throw(ArgumentError(
-                "src and dest are not the same size in third dimension"
-            ))
+            throw(ArgumentError("src and dest are not the same size in third dimension"))
         end
         frameno <= ssz[3] || throw(ArgumentError("frameno exceeds third dimension"))
     end
@@ -255,9 +289,14 @@ function frame_ref_map!(f, dest::AbstractArray, tasks::AbstractVector{Task},
     _frame_ref_map!(f, dest, tasks, src, ref, yranges, xr, frameno)
 end
 
-function frame_ref_map!(f, dest::AbstractArray, src::AbstractArray,
-                        ref::AbstractMatrix, frameno::Integer = 1;
-                        nt = nthreads())
+function frame_ref_map!(
+    f,
+    dest::AbstractArray,
+    src::AbstractArray,
+    ref::AbstractMatrix,
+    frameno::Integer = 1;
+    nt = nthreads(),
+)
     tasks, yranges, xr = plan_frame_map(dest, nt)
     frame_ref_map!(f, dest, tasks, src, ref, yranges, xr, frameno; nt)
 end
@@ -276,14 +315,14 @@ end
 
 plan_frame_map(src::AbstractArray, nt) = plan_frame_map(size(src)[1:2]..., nt)
 
-function frame_min(imgs::AbstractArray{T, 3}) where T
+function frame_min(imgs::AbstractArray{T,3}) where {T}
     nr, nc, nf = size(imgs)
     reduced_frames = reduce(min, imgs; dims = (3,), init = typemax(T))
     return reshape(reduced_frames, (nr, nc))
 end
 
 function _frame_min_max!(minframe, maxframe, thisframe, rowrange, lo, hi)
-    for colno in lo:hi
+    for colno = lo:hi
         @inbounds @simd ivdep for rowno in rowrange
             thisval = thisframe[rowno, colno]
             minframe[rowno, colno] = min(minframe[rowno, colno], thisval)
@@ -292,11 +331,16 @@ function _frame_min_max!(minframe, maxframe, thisframe, rowrange, lo, hi)
     end
 end
 
-function frame_min_max!(minframe, maxframe, tasks, thisframe, rowrange, los,
-                        his)
+function frame_min_max!(minframe, maxframe, tasks, thisframe, rowrange, los, his)
     @inbounds for tno in eachindex(tasks)
-        tasks[tno] = @spawn _frame_min_max!(minframe, maxframe, thisframe,
-                                            rowrange, los[tno], his[tno])
+        tasks[tno] = @spawn _frame_min_max!(
+            minframe,
+            maxframe,
+            thisframe,
+            rowrange,
+            los[tno],
+            his[tno],
+        )
     end
     foreach(wait, tasks)
     return minframe, maxframe
@@ -308,12 +352,11 @@ function frame_min_max!(minframe, maxframe, thisframe; nt = nthreads())
     if nt > 1
         blksize = cld(nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nc)
-            @inbounds tasks[tno] = @spawn _frame_min_max!(minframe, maxframe,
-                                                          thisframe, rowrange,
-                                                          lo, hi)
+            @inbounds tasks[tno] =
+                @spawn _frame_min_max!(minframe, maxframe, thisframe, rowrange, lo, hi)
         end
         foreach(wait, tasks)
     else
@@ -322,33 +365,38 @@ function frame_min_max!(minframe, maxframe, thisframe; nt = nthreads())
     return minframe, maxframe
 end
 
-function frames_min_max!(minframe, maxframe, imgs::AbstractArray{<:Any, 3};
-                        nt = nthreads())
+function frames_min_max!(minframe, maxframe, imgs::AbstractArray{<:Any,3}; nt = nthreads())
     nr, nc, nf = size(imgs)
     rowrange = 1:nr
     if nt > 1
         blksize = cld(nc, nt)
         los = Vector{Int}(undef, nt)
         his = similar(los)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             los[tno] = (tno - 1) * blksize + 1
             his[tno] = min(tno * blksize, nc)
         end
         tasks = Vector{Task}(undef, nt)
-        for fno in 1:nf
-            frame_min_max!(minframe, maxframe, tasks, view(imgs, :, :, fno),
-                           rowrange, los, his)
+        for fno = 1:nf
+            frame_min_max!(
+                minframe,
+                maxframe,
+                tasks,
+                view(imgs,:,:,fno),
+                rowrange,
+                los,
+                his,
+            )
         end
     else
-        for fno in 1:nf
-            _frame_min_max!(minframe, maxframe, view(imgs, :, :, fno), rowrange,
-                            1, nc)
+        for fno = 1:nf
+            _frame_min_max!(minframe, maxframe, view(imgs,:,:,fno), rowrange, 1, nc)
         end
     end
     return minframe, maxframe
 end
 
-function frames_min_max(imgs::AbstractArray{T, 3}; nt = nthreads()) where T
+function frames_min_max(imgs::AbstractArray{T,3}; nt = nthreads()) where {T}
     nr, nc, nz = size(imgs)
     minframe = fill(typemax(T), (nr, nc))
     maxframe = fill(typemin(T), (nr, nc))
@@ -366,15 +414,19 @@ function _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange, colrange)
     end
 end
 
-function frame_min_max_accum!(minf, maxf, accf, tasks, thisframe, rowrange,
-                              colranges)
+function frame_min_max_accum!(minf, maxf, accf, tasks, thisframe, rowrange, colranges)
     if isempty(tasks)
-        _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange,
-                              colranges[1])
+        _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange, colranges[1])
     else
         @inbounds for tno in eachindex(tasks)
-            tasks[tno] = @spawn _frame_min_max_accum!(minf, maxf, accf, thisframe,
-                                                      rowrange, colranges[tno])
+            tasks[tno] = @spawn _frame_min_max_accum!(
+                minf,
+                maxf,
+                accf,
+                thisframe,
+                rowrange,
+                colranges[tno],
+            )
         end
         foreach(wait, tasks)
     end
@@ -387,12 +439,11 @@ function frame_min_max_accum!(minf, maxf, accf, thisframe; nt = nthreads())
     if nt > 1
         blksize = cld(nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nc)
-            @inbounds tasks[tno] = @spawn _frame_min_max_accum!(minf, maxf, accf,
-                                                          thisframe, rowrange,
-                                                          lo:hi)
+            @inbounds tasks[tno] =
+                @spawn _frame_min_max_accum!(minf, maxf, accf, thisframe, rowrange, lo:hi)
         end
         foreach(wait, tasks)
     else
@@ -407,42 +458,49 @@ function frames_min_max_accum!(minf, maxf, accf, imgs; nt = nthreads())
     if nt > 1
         blksize = cld(nc, nt)
         colranges = Vector{UnitRange{Int}}(undef, nt)
-        @inbounds for tno in 1:nt
-            colranges[tno] = (tno - 1) * blksize + 1 : min(tno * blksize, nc)
+        @inbounds for tno = 1:nt
+            colranges[tno] = ((tno-1)*blksize+1):min(tno*blksize, nc)
         end
         tasks = Vector{Task}(undef, nt)
-        for fno in 1:nf
-            frame_min_max_accum!(minf, maxf, accf, tasks, view(imgs, :, :, fno),
-                                rowrange, colranges)
+        for fno = 1:nf
+            frame_min_max_accum!(
+                minf,
+                maxf,
+                accf,
+                tasks,
+                view(imgs,:,:,fno),
+                rowrange,
+                colranges,
+            )
         end
     else
         colrange = 1:nc
-        for fno in 1:nf
-            _frame_min_max_accum!(minf, maxf, accf, view(imgs, :, :, fno),
-                                  rowrange, colrange)
+        for fno = 1:nf
+            _frame_min_max_accum!(minf, maxf, accf, view(imgs,:,:,fno), rowrange, colrange)
         end
     end
     minf, maxf, accf
 end
 
-function frames_min_max_accum_alloc(::Type{S}, ::Type{T}, sz) where {S, T}
+function frames_min_max_accum_alloc(::Type{S}, ::Type{T}, sz) where {S,T}
     minf = Array{T}(undef, sz)
     maxf = similar(minf)
     accf = Array{S}(undef, sz)
     minf, maxf, accf
 end
 
-function frames_min_max_accum_init!(minf::AbstractArray{T},
-                                    maxf::AbstractArray{T},
-                                    accf) where T
+function frames_min_max_accum_init!(
+    minf::AbstractArray{T},
+    maxf::AbstractArray{T},
+    accf,
+) where {T}
     fill!(minf, typemax(T))
     fill!(maxf, typemin(T))
     fill!(accf, 0)
     minf, maxf, accf
 end
 
-function frames_min_max_accum(::Type{S}, imgs::AbstractArray{T, 3};
-                            kwargs...) where {S,T}
+function frames_min_max_accum(::Type{S}, imgs::AbstractArray{T,3}; kwargs...) where {S,T}
     nr, nc, nz = size(imgs)
     minf, maxf, accf = frames_min_max_accum_alloc(S, T, (nr, nc))
     frames_min_max_accum_init!(minf, maxf, accf)
@@ -464,8 +522,7 @@ frames_min_max_mean(imgs::AbstractArray{<:AbstractFloat}; kwargs...) =
     frames_min_max_mean(Float32, Float64, imgs; kwargs...)
 
 
-function find_mean_and_scale_fun(::Type{T}, signal, newmax, usegamma = false
-                                 ) where T
+function find_mean_and_scale_fun(::Type{T}, signal, newmax, usegamma = false) where {T}
     minf, maxf, meanf = frames_min_max_mean(signal)
     minv = typemax(eltype(meanf))
     maxv = typemin(minv)
@@ -479,7 +536,7 @@ function find_mean_and_scale_fun(::Type{T}, signal, newmax, usegamma = false
 end
 
 function _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
-    for cno in lo:hi
+    for cno = lo:hi
         @inbounds @simd ivdep for rno in rowrange
             dest[rno, cno] = thisframe[rno, cno] - rmframe[rno, cno]
         end
@@ -494,12 +551,11 @@ function subtract_frame!(dest, thisframe, rmframe; nt = nthreads())
     if nt > 1
         blksize = cld(nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nc)
-            @inbounds tasks[tno] = @spawn _subtract_frame!(dest, thisframe,
-                                                           rmframe, rowrange,
-                                                           lo, hi)
+            @inbounds tasks[tno] =
+                @spawn _subtract_frame!(dest, thisframe, rmframe, rowrange, lo, hi)
         end
         foreach(wait, tasks)
     else
@@ -510,17 +566,19 @@ end
 
 function subtract_frame!(dest, tasks, thisframe, rmframe, rowrange, los, his)
     @inbounds for tno in eachindex(tasks)
-        tasks[tno] = @spawn _subtract_frame!(dest, thisframe, rmframe, rowrange,
-                                             los[tno], his[tno])
+        tasks[tno] =
+            @spawn _subtract_frame!(dest, thisframe, rmframe, rowrange, los[tno], his[tno])
     end
     foreach(wait, tasks)
     return dest
 end
 
-function subtract_frame(frame::AbstractArray{T},
-                        rmframe::AbstractArray{S}; kwargs...) where {S,T}
-    subtract_frame!(similar(frame, promote_type(T, S)), frame, rmframe;
-                    kwargs...)
+function subtract_frame(
+    frame::AbstractArray{T},
+    rmframe::AbstractArray{S};
+    kwargs...,
+) where {S,T}
+    subtract_frame!(similar(frame, promote_type(T, S)), frame, rmframe; kwargs...)
 end
 
 function subtract_frames!(dest, frames, rmframe; nt = nthreads())
@@ -533,19 +591,31 @@ function subtract_frames!(dest, frames, rmframe; nt = nthreads())
         tasks = Vector{Task}(undef, nt)
         los = similar(tasks, Int)
         his = similar(los)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             los[tno] = (tno - 1) * blksize + 1
             his[tno] = min(tno * blksize, nc)
         end
-        @inbounds for fno in 1:nf
-            subtract_frame!(view(dest, :, :, fno), tasks,
-                            view(frames, :, :, fno), rmframe, rowrange, los,
-                            his)
+        @inbounds for fno = 1:nf
+            subtract_frame!(
+                view(dest,:,:,fno),
+                tasks,
+                view(frames,:,:,fno),
+                rmframe,
+                rowrange,
+                los,
+                his,
+            )
         end
     else
-        @inbounds for fno in 1:nf
-            _subtract_frame!(view(dest, :, :, fno), view(frames, :, :, fno),
-                             rmframe, rowrange, 1, nc)
+        @inbounds for fno = 1:nf
+            _subtract_frame!(
+                view(dest,:,:,fno),
+                view(frames,:,:,fno),
+                rmframe,
+                rowrange,
+                1,
+                nc,
+            )
         end
     end
     return dest
@@ -566,7 +636,7 @@ demin!(imgs; kwargs...) = demin!(imgs, imgs; kwargs...)
 function demin(imgs; scratch_dir = tempdir(), kwargs...)
     if !isempty(scratch_dir) && isdir(scratch_dir)
         mpath, mio = mktemp(scratch_dir)
-        dest = Mmap.mmap(mio, Array{eltype(imgs), 3}, size(imgs))
+        dest = Mmap.mmap(mio, Array{eltype(imgs),3}, size(imgs))
         close(mio)
         rm(mpath)
     else
@@ -576,18 +646,18 @@ function demin(imgs; scratch_dir = tempdir(), kwargs...)
 end
 
 function _avg_intensities!(intensities, imgs, lo, hi)
-    @inbounds @simd for fno in lo:hi
+    @inbounds @simd for fno = lo:hi
         intensities[fno] = mean(imgs[:, :, fno])
     end
 end
 
-function avg_intensities(imgs::AbstractArray{<:Any, 3}; nt = nthreads())
+function avg_intensities(imgs::AbstractArray{<:Any,3}; nt = nthreads())
     nf = size(imgs, 3)
     intensities = Vector{Float64}(undef, nf)
     if nt > 1
         blksize = cld(nf, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nf)
             @inbounds tasks[tno] = @spawn _avg_intensities!(intensities, imgs, lo, hi)
@@ -600,18 +670,18 @@ function avg_intensities(imgs::AbstractArray{<:Any, 3}; nt = nthreads())
 end
 
 function _max_intensities!(intensities, imgs, lo, hi)
-    @inbounds @simd for fno in lo:hi
+    @inbounds @simd for fno = lo:hi
         intensities[fno] = maximum(imgs[:, :, fno])
     end
 end
 
-function max_intensities(imgs::AbstractArray{<:Any, 3}; nt = nthreads())
+function max_intensities(imgs::AbstractArray{<:Any,3}; nt = nthreads())
     nf = size(imgs, 3)
     intensities = similar(imgs, (nf,))
     if nt > 1
         blksize = cld(nf, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nf)
             @inbounds tasks[tno] = @spawn _max_intensities!(intensities, imgs, lo, hi)
@@ -640,12 +710,12 @@ function clip_segments_thr(imgs, thr; nt = nthreads())
     open_pers = find_segments_thr(imgs, thr, nt = nt)
     nseg = length(open_pers)
     segments = map(1:nseg) do segno
-        view(imgs, :, :, open_pers[segno])
+        view(imgs,:,:,open_pers[segno])
     end
     return segments, open_pers
 end
 
-function map_to_8bit(imgs::AbstractArray{<:Normed, 3})
+function map_to_8bit(imgs::AbstractArray{<:Normed,3})
     if reinterpret(UInt16, maximum(imgs)) > typemax(UInt8)
         throw(ArgumentError("Maximum exceeds 8 bits"))
     end
@@ -656,73 +726,75 @@ function map_to_8bit(imgs::AbstractArray{<:Normed, 3})
     return out
 end
 
-srgb_gamma_compress(x) = x <= 0.0031308 ?
-    323 * x / 25 :
-    (211 * x ^ (5 / 12) - 11) / 200
+srgb_gamma_compress(x) = x <= 0.0031308 ? 323 * x / 25 : (211 * x ^ (5 / 12) - 11) / 200
 
-srgb_gamma_expand(x) = x <= 0.04045 ?
-    25 * x / 323 :
-    ((200 * x + 11) / 211)^(12 / 5)
+srgb_gamma_expand(x) = x <= 0.04045 ? 25 * x / 323 : ((200 * x + 11) / 211)^(12 / 5)
 
 rawval(x::Normed) = reinterpret(x)
 rawval(x) = x
 
-rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T<:Integer =
+rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where {T<:Integer} =
     round(T, newmax * float(x - xmin) / (xmax - xmin))
-rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where T =
+rescale_brightness(::Type{T}, x, xmin, xmax, newmax) where {T} =
     convert(T, newmax * float(x - xmin) / (xmax - xmin))
 
-rescale_brightness(::Type{T}, x::T, xmin, xmax, newmax) where {X, T<:Normed{X}} =
-    reinterpret(T, rescale_brightness(X, rawval(x), rawval(xmin),
-                                      rawval(xmax), rawval(newmax)))
+rescale_brightness(::Type{T}, x::T, xmin, xmax, newmax) where {X,T<:Normed{X}} =
+    reinterpret(
+        T,
+        rescale_brightness(X, rawval(x), rawval(xmin), rawval(xmax), rawval(newmax)),
+    )
 
-rescale_brightness(x::T, xmin, xmax, newmax) where T =
+rescale_brightness(x::T, xmin, xmax, newmax) where {T} =
     rescale_brightness(T, x, xmin, xmax, newmax)
 
 rescale_brightness(x, xmax, newmax) = rescale_brightness(x, 0, xmax, newmax)
 
-rescale_clamp_brightness(::Type{T}, x, b, e, newmax) where T =
+rescale_clamp_brightness(::Type{T}, x, b, e, newmax) where {T} =
     rescale_brightness(T, clamp(x, b, e), b, e, newmax)
 
-function rescale_replace_brightness(::Type{T}, x, b, e, fillval,
-                                    newmax = typemax(T)) where T
+function rescale_replace_brightness(
+    ::Type{T},
+    x,
+    b,
+    e,
+    fillval,
+    newmax = typemax(T),
+) where {T}
     rescale_brightness(T, ifelse(b <= x <= e, x, fillval), b, e, newmax)
 end
 
-scale_clamp_f(::Type{T}, b, e, m = typemax(T)) where T =
+scale_clamp_f(::Type{T}, b, e, m = typemax(T)) where {T} =
     x -> rescale_brightness(T, clamp(x, b, e), b, e, m)
 
 
-function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T <: Integer
+function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where {T<:Integer}
     gamma_float = srgb_gamma_compress(rescale_brightness(Float64, x, xmin, xmax, 1))
     return round(T, newmax * gamma_float)
 end
-function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where T
+function gamma_compensate_rescale(::Type{T}, x, xmin, xmax, newmax) where {T}
     gamma_float = srgb_gamma_compress(rescale_brightness(Float64, x, xmin, xmax, 1))
     convert(T, gamma_float)
 end
-gamma_compensate_rescale(x::T, args...) where T = gamma_compensate_rescale(T, x, args...)
+gamma_compensate_rescale(x::T, args...) where {T} = gamma_compensate_rescale(T, x, args...)
 
-px_step_range(b::T, e::T) where T = b:e
-px_step_range(b::T, e::T) where T<:Normed = b:eps(T):e
+px_step_range(b::T, e::T) where {T} = b:e
+px_step_range(b::T, e::T) where {T<:Normed} = b:eps(T):e
 px_step_range(b, e) = px_step_range(promote(b, e)...)
 
-function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
+function make_pixel_lut(::Type{T}, minval, maxval, newmax, use_gamma = false) where {T}
     r = px_step_range(minval, maxval)
     if use_gamma
-        lut = pixel_lut(x -> gamma_compensate_rescale(T, x, minval, maxval,
-                                                      newmax), r)
+        lut = pixel_lut(x -> gamma_compensate_rescale(T, x, minval, maxval, newmax), r)
     else
-        lut = pixel_lut(x -> rescale_brightness(T, x, minval, maxval, newmax),
-                        r)
+        lut = pixel_lut(x -> rescale_brightness(T, x, minval, maxval, newmax), r)
     end
     lut
 end
 
-make_pixel_lut(minv::T, maxv::T, newmax, args...) where T =
+make_pixel_lut(minv::T, maxv::T, newmax, args...) where {T} =
     make_pixel_lut(T, minv, maxv, newmax, args...)
 
-function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) where T
+function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) where {T}
     if use_gamma
         scale_f = x -> gamma_compensate_rescale(T, x, minval, maxval, newmax)
     else
@@ -731,7 +803,7 @@ function make_scale_f(::Type{T}, minval, maxval, newmax, use_gamma = false) wher
     scale_f
 end
 
-make_scale_f(minv::T, maxv::T, newmax, args...) where T =
+make_scale_f(minv::T, maxv::T, newmax, args...) where {T} =
     make_scale_f(T, minv, maxv, newmax, args...)
 
 @inline function rescale_compress(::Type{UInt8}, x::Integer, scale::Float64)
@@ -739,7 +811,11 @@ make_scale_f(minv::T, maxv::T, newmax, args...) where T =
     return round(UInt8, typemax(UInt8) * scaled_val)
 end
 
-@inline function rescale_compress(::Type{T}, x::Normed, scale::AbstractFloat) where T<:Normed
+@inline function rescale_compress(
+    ::Type{T},
+    x::Normed,
+    scale::AbstractFloat,
+) where {T<:Normed}
     scaled_val = srgb_gamma_compress(scale * x)
     convert(T, scaled_val)
 end
@@ -747,26 +823,23 @@ end
 rescale_compress(d::DataType, x::Normed, scale::Float64) =
     rescale_compress(d, reinterpret(x), scale)
 
-function __rescale_compress_img!(outimg::AbstractMatrix{T}, inimg, lut, lo,
-                                 hi) where T
+function __rescale_compress_img!(outimg::AbstractMatrix{T}, inimg, lut, lo, hi) where {T}
     rows = 1:size(inimg, 1)
-    @inbounds for colno in lo:hi, rowno in rows
+    @inbounds for colno = lo:hi, rowno in rows
         outimg[rowno, colno] = lut[inimg[rowno, colno]]
     end
 end
 
-function _rescale_compress_img!(outimg::AbstractMatrix, inimg,
-                                lut; nt = 4)
-    ncol  = size(inimg, 2)
+function _rescale_compress_img!(outimg::AbstractMatrix, inimg, lut; nt = 4)
+    ncol = size(inimg, 2)
     if nt > 1
         tasks = Vector{Task}(undef, nt)
         blksize = cld(ncol, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, ncol)
-            @inbounds tasks[tno] = @spawn __rescale_compress_img!(
-                outimg, inimg, lut, lo, hi
-            )
+            @inbounds tasks[tno] =
+                @spawn __rescale_compress_img!(outimg, inimg, lut, lo, hi)
         end
         foreach(wait, tasks)
     else
@@ -787,10 +860,8 @@ function rescale_compress_img(inimg, lut)
 end
 
 lut_maxrange(minv, maxv, newmax) = make_pixel_lut(minv, maxv, newmax)
-lut_maxrange(minv::T, maxv::T) where T<:Integer =
-    lut_maxrange(minv, maxv, typemax(T))
-lut_maxrange(minval::T, maxval::T) where T<:Normed =
-    lut_maxrange(minval, maxval, one(T))
+lut_maxrange(minv::T, maxv::T) where {T<:Integer} = lut_maxrange(minv, maxv, typemax(T))
+lut_maxrange(minval::T, maxval::T) where {T<:Normed} = lut_maxrange(minval, maxval, one(T))
 lut_maxrange(minv, maxv, ::Nothing) = lut_maxrange(minv, maxv)
 
 function lut_maxrange(imgstack, newmax = nothing)
@@ -798,7 +869,7 @@ function lut_maxrange(imgstack, newmax = nothing)
     lut_maxrange(minval, maxval, newmax)
 end
 
-function lut_maxrange(imgstack::AbstractArray{T, 3}, newmax = nothing) where T
+function lut_maxrange(imgstack::AbstractArray{T,3}, newmax = nothing) where {T}
     minval, maxval = extrema(imgstack)
     lut_maxrange(minval, maxval, newmax)
 end
@@ -810,17 +881,19 @@ end
 
 determine_container_depth(maxval) = maxval <= typemax(UInt8) ? N0f8 : N6f10
 
-larger_container_type(::Type{T}, ::Type{T}) where T = T
-larger_container_type(::Type{Base.Bottom}, ::Type{T}) where T = T
-larger_container_type(::Type{T}, ::Type{Base.Bottom}) where T = T
+larger_container_type(::Type{T}, ::Type{T}) where {T} = T
+larger_container_type(::Type{Base.Bottom}, ::Type{T}) where {T} = T
+larger_container_type(::Type{T}, ::Type{Base.Bottom}) where {T} = T
 larger_container_type(::Type{Base.Bottom}, ::Type{Base.Bottom}) = Base.Bottom
 function larger_container_type(::Type{S}, ::Type{T}) where {S,T}
     larger_container_type(larger_container_rule(S, T), larger_container_rule(T, S))
 end
 
 larger_container_rule(::Type{<:Any}, ::Type{<:Any}) = Base.Bottom
-function larger_container_rule(::Type{X}, ::Type{Y}) where {A, f, X<:Normed{A, f},
-                                                            B, g, Y<:Normed{B, g}}
+function larger_container_rule(
+    ::Type{X},
+    ::Type{Y},
+) where {A,f,X<:Normed{A,f},B,g,Y<:Normed{B,g}}
     if f < g
         T = Y
     elseif f == g
@@ -833,11 +906,10 @@ function larger_container_rule(::Type{X}, ::Type{Y}) where {A, f, X<:Normed{A, f
 end
 
 function max_container_depth(maxvals)
-    mapreduce(determine_container_depth, larger_container_type,
-              maxvals, init = N0f8)
+    mapreduce(determine_container_depth, larger_container_type, maxvals, init = N0f8)
 end
 
-function _frame_sum_intensity(f, ::Type{T}, img_raw, roi_xr, roi_yr) where T
+function _frame_sum_intensity(f, ::Type{T}, img_raw, roi_xr, roi_yr) where {T}
     accum = zero(T)
     @inbounds for yi in eachindex(roi_yr)
         for xi in eachindex(roi_xr)
@@ -848,20 +920,25 @@ function _frame_sum_intensity(f, ::Type{T}, img_raw, roi_xr, roi_yr) where T
     accum
 end
 
-function frame_sum_intensity(f, ::Type{T}, img_raw::AbstractArray;
-                             roi_xr = 1:size(img_raw, 1),
-                             roi_yr = 1:size(img_raw, 2), nt = nthreads()) where T
+function frame_sum_intensity(
+    f,
+    ::Type{T},
+    img_raw::AbstractArray;
+    roi_xr = 1:size(img_raw, 1),
+    roi_yr = 1:size(img_raw, 2),
+    nt = nthreads(),
+) where {T}
     if nt > 1
         ny = length(roi_yr)
         blksize = cld(ny, nt)
         tasks = Vector{Task}(undef, nt)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             lo = (tno - 1) * blksize + first(roi_yr)
             hi = min(first(roi_yr) + tno * blksize - 1, last(roi_yr))
             tasks[tno] = @spawn _frame_sum_intensity(f, T, img_raw, roi_xr, lo:hi)
         end
         accum = zero(T)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             accum += fetch(tasks[tno])::T
         end
     else
@@ -870,30 +947,36 @@ function frame_sum_intensity(f, ::Type{T}, img_raw::AbstractArray;
     accum
 end
 
-function frame_sum_intensity(f::typeof(identity),
-                             img_raw::AbstractArray{UInt16}; kwargs...)
+function frame_sum_intensity(f::typeof(identity), img_raw::AbstractArray{UInt16}; kwargs...)
     frame_sum_intensity(f, UInt64, img_raw; kwargs...)
 end
 
-function frame_sum_intensity(f::typeof(identity), img_raw::AbstractArray{T};
-                             kwargs...) where {X, T<:Normed{X}}
+function frame_sum_intensity(
+    f::typeof(identity),
+    img_raw::AbstractArray{T};
+    kwargs...,
+) where {X,T<:Normed{X}}
     frame_sum_intensity(f, reinterpret(X, img_raw); kwargs...)
 end
 
 frame_sum_intensity(img_raw; kwargs...) = frame_sum_intensity(identity, img_raw; kwargs...)
 
-frame_avg_intensity(f, ::Type{T}, img_raw::AbstractArray, norm;
-                    kwargs...) where T =
+frame_avg_intensity(f, ::Type{T}, img_raw::AbstractArray, norm; kwargs...) where {T} =
     norm * frame_sum_intensity(f, T, img_raw; kwargs...)
 
-function frame_avg_intensity(f, ::Type{T}, img_raw; roi_xr = 1:size(img_raw, 1),
-                             roi_yr = 1:size(img_raw, 2), kwargs...) where T
+function frame_avg_intensity(
+    f,
+    ::Type{T},
+    img_raw;
+    roi_xr = 1:size(img_raw, 1),
+    roi_yr = 1:size(img_raw, 2),
+    kwargs...,
+) where {T}
     norm = get_norm(roi_xr, roi_yr)
     frame_avg_intensity(f, T, img_raw, norm; roi_xr, roi_yr, kwargs...)
 end
 
-frame_avg_intensity(::Type{T}, img_raw::AbstractArray, args...;
-                    kwargs...) where T =
+frame_avg_intensity(::Type{T}, img_raw::AbstractArray, args...; kwargs...) where {T} =
     frame_avg_intensity(identity, T, img_raw, args...; kwargs...)
 frame_avg_intensity(img_raw::AbstractArray, args...; kwargs...) =
     frame_avg_intensity(UInt64, img_raw, args...; kwargs...)
@@ -910,25 +993,28 @@ get_norm(img::AbstractMatrix) = get_norm(size(img)...)
 
 function _maxval_min_max_frames(roi_min, roi_max, ib, ie)
     subtr_mv = typemin(eltype(roi_min))
-    @inbounds @simd ivdep for i in ib:ie
+    @inbounds @simd ivdep for i = ib:ie
         subtr_mv = max(roi_max[i] - roi_min[i], subtr_mv)
     end
     subtr_mv
 end
 
-function maxval_min_max_frames(roi_min::AbstractArray{T}, roi_max, nt = nthreads()) where T
+function maxval_min_max_frames(
+    roi_min::AbstractArray{T},
+    roi_max,
+    nt = nthreads(),
+) where {T}
     nel = length(roi_min)
     if nt > 1
         blksize = cld(nel, nt)
         tasks = Vector{Task}(undef, nt)
-        for tno in 1:nt
+        for tno = 1:nt
             lo = (tno - 1) * blksize + 1
             hi = min(tno * blksize, nel)
-            @inbounds tasks[tno] = @spawn _maxval_min_max_frames(roi_min,
-                                                                 roi_max, lo, hi)
+            @inbounds tasks[tno] = @spawn _maxval_min_max_frames(roi_min, roi_max, lo, hi)
         end
         subtr_mv = typemin(T)
-        for tno in 1:nt
+        for tno = 1:nt
             this_mv = fetch(tasks[tno])::T
             subtr_mv = max(this_mv, subtr_mv)
         end
@@ -942,17 +1028,22 @@ restrict_size(n) = iseven(n) ? div(n, 2) + 1 : div(n + 1, 2)
 
 function restrict_no_edges!(dest, img::AbstractMatrix)
     halved = restrict(img)
-    dest .= halved[2 : end - 1, 2 : end - 1]
+    dest .= halved[2:(end-1), 2:(end-1)]
     dest
 end
 
-restrict_no_edges(img::AbstractArray{T}) where T =
-    restrict_no_edges!(similar(img, floattype(T), restrict_size.(size(img)) .- 2),
-                       img)
+restrict_no_edges(img::AbstractArray{T}) where {T} =
+    restrict_no_edges!(similar(img, floattype(T), restrict_size.(size(img)) .- 2), img)
 
-function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
-                           stack::AbstractArray{<:Any, 3}, fno, colrange,
-                           rowrange, ref_frame::AbstractMatrix) where T
+function _frame_pixel_map!(
+    pixel_f::T,
+    dest::AbstractMatrix{<:Any},
+    stack::AbstractArray{<:Any,3},
+    fno,
+    colrange,
+    rowrange,
+    ref_frame::AbstractMatrix,
+) where {T}
     for c in colrange
         @inbounds @simd for r in rowrange
             dest[r, c] = pixel_f(stack[r, c, fno], ref_frame[r, c])
@@ -961,9 +1052,14 @@ function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
     nothing
 end
 
-function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
-                           stack::AbstractArray{<:Any, 3}, fno, colrange,
-                           rowrange) where T
+function _frame_pixel_map!(
+    pixel_f::T,
+    dest::AbstractMatrix{<:Any},
+    stack::AbstractArray{<:Any,3},
+    fno,
+    colrange,
+    rowrange,
+) where {T}
     for c in colrange
         @inbounds @simd for r in rowrange
             dest[r, c] = pixel_f(stack[r, c, fno])
@@ -972,63 +1068,88 @@ function _frame_pixel_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
     nothing
 end
 
-function frame_map!(pixel_f::T, dest::AbstractMatrix{<:Any},
-                    stack::AbstractArray{<:Any, 3}, args...;
-                    nt = nthreads()) where {S, T}
+function frame_map!(
+    pixel_f::T,
+    dest::AbstractMatrix{<:Any},
+    stack::AbstractArray{<:Any,3},
+    args...;
+    nt = nthreads(),
+) where {S,T}
     nr, nc, nf = size(stack)
     rowrange = 1:nr
     if nt > 1
         colranges = splits(1:nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for fno in 1:nf
-            @inbounds for tno in 1:nt
-                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack, fno,
-                                                      colranges[tno], rowrange,
-                                                      dest)
+        for fno = 1:nf
+            @inbounds for tno = 1:nt
+                tasks[tno] = @spawn _frame_pixel_map!(
+                    pixel_f,
+                    dest,
+                    stack,
+                    fno,
+                    colranges[tno],
+                    rowrange,
+                    dest,
+                )
             end
             foreach(wait, tasks)
         end
     else
         colrange = 1:nc
-        for fno in 1:nf
+        for fno = 1:nf
             _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange, dest)
         end
     end
     dest
 end
 
-function frame_sink_map!(frame_sink_f::S, pixel_f::T,
-                         dest::AbstractMatrix{<:Any},
-                         stack::AbstractArray{<:Any, 3}, args...;
-                         nt = nthreads()) where {S, T}
+function frame_sink_map!(
+    frame_sink_f::S,
+    pixel_f::T,
+    dest::AbstractMatrix{<:Any},
+    stack::AbstractArray{<:Any,3},
+    args...;
+    nt = nthreads(),
+) where {S,T}
     nr, nc, nf = size(stack)
     rowrange = 1:nr
     if nt > 1
         colranges = splits(1:nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for fno in 1:nf
-            @inbounds for tno in 1:nt
-                tasks[tno] = @spawn _frame_pixel_map!(pixel_f, dest, stack, fno,
-                                                      colranges[tno], rowrange,
-                                                      args...)
+        for fno = 1:nf
+            @inbounds for tno = 1:nt
+                tasks[tno] = @spawn _frame_pixel_map!(
+                    pixel_f,
+                    dest,
+                    stack,
+                    fno,
+                    colranges[tno],
+                    rowrange,
+                    args...,
+                )
             end
             foreach(wait, tasks)
             frame_sink_f(dest, fno)
         end
     else
         colrange = 1:nc
-        for fno in 1:nf
-            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange,
-                              args...)
+        for fno = 1:nf
+            _frame_pixel_map!(pixelf, dest, stack, fno, colrange, rowrange, args...)
             frame_sink_f(dest, fno)
         end
     end
     nothing
 end
 
-function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
-                     stack::AbstractArray{<:Any, 3}, fno, colrange,
-                     rowrange, ref_frame::AbstractMatrix) where T
+function _stack_map!(
+    pixel_f::T,
+    dest::AbstractArray{<:Any,3},
+    stack::AbstractArray{<:Any,3},
+    fno,
+    colrange,
+    rowrange,
+    ref_frame::AbstractMatrix,
+) where {T}
     for c in colrange
         @inbounds @simd for r in rowrange
             dest[r, c, fno] = pixel_f(stack[r, c, fno], ref_frame[r, c])
@@ -1037,9 +1158,14 @@ function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
     nothing
 end
 
-function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
-                     stack::AbstractArray{<:Any, 3}, fno, colrange,
-                     rowrange) where T
+function _stack_map!(
+    pixel_f::T,
+    dest::AbstractArray{<:Any,3},
+    stack::AbstractArray{<:Any,3},
+    fno,
+    colrange,
+    rowrange,
+) where {T}
     for c in colrange
         @inbounds @simd for r in rowrange
             dest[r, c, fno] = pixel_f(stack[r, c, fno])
@@ -1048,24 +1174,35 @@ function _stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
     nothing
 end
 
-function stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
-                    stack::AbstractArray{<:Any, 3}, args...; nt = nthreads()) where T
+function stack_map!(
+    pixel_f::T,
+    dest::AbstractArray{<:Any,3},
+    stack::AbstractArray{<:Any,3},
+    args...;
+    nt = nthreads(),
+) where {T}
     nr, nc, nf = size(stack)
     rowrange = 1:nr
     if nt > 1
         colranges = splits(1:nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for fno in 1:nf
-            @inbounds for tno in 1:nt
-                tasks[tno] = @spawn _stack_map!(pixel_f, dest, stack, fno,
-                                                colranges[tno], rowrange,
-                                                args...)
+        for fno = 1:nf
+            @inbounds for tno = 1:nt
+                tasks[tno] = @spawn _stack_map!(
+                    pixel_f,
+                    dest,
+                    stack,
+                    fno,
+                    colranges[tno],
+                    rowrange,
+                    args...,
+                )
             end
             foreach(wait, tasks)
         end
     else
         colrange = 1:nc
-        for fno in 1:nf
+        for fno = 1:nf
             _stack_map!(pixelf, dest, stack, fno, colrange, rowrange, args...)
         end
     end
@@ -1073,8 +1210,14 @@ function stack_map!(pixel_f::T, dest::AbstractArray{<:Any, 3},
 
 end
 
-function __stack_temporal_downsample_accum!(ds, stack, dstframe, srcframe,
-                                            colrange, rowrange)
+function __stack_temporal_downsample_accum!(
+    ds,
+    stack,
+    dstframe,
+    srcframe,
+    colrange,
+    rowrange,
+)
     for c in colrange
         @inbounds @simd for r in rowrange
             ds[r, c, dstframe] += stack[r, c, srcframe]
@@ -1096,30 +1239,45 @@ function _stack_temporal_downsample!(ds, stack, factor; nt = nthreads())
     if nt > 1
         colranges = splits(1:nc, nt)
         tasks = Vector{Task}(undef, nt)
-        for i in 1:nff
-            for j in 1:factor
+        for i = 1:nff
+            for j = 1:factor
                 srcframe = factor * (i - 1) + j
-                @inbounds for tno in 1:nt
+                @inbounds for tno = 1:nt
                     tasks[tno] = @spawn __stack_temporal_downsample_accum!(
-                        ds, stack, i, srcframe, colranges[tno], rowrange
+                        ds,
+                        stack,
+                        i,
+                        srcframe,
+                        colranges[tno],
+                        rowrange,
                     )
                 end
                 foreach(wait, tasks)
             end
-            @inbounds for tno in 1:nt
+            @inbounds for tno = 1:nt
                 tasks[tno] = @spawn __stack_temporal_downsample_scale!(
-                    ds, factor, i, colranges[tno], rowrange
+                    ds,
+                    factor,
+                    i,
+                    colranges[tno],
+                    rowrange,
                 )
             end
             foreach(wait, tasks)
         end
     else
         colrange = 1:nc
-        for i in 1:nff
-            for j in 1:factor
+        for i = 1:nff
+            for j = 1:factor
                 srcframe = factor * (i - 1) + j
-                __stack_temporal_downsample_accum!(ds, stack, i, srcframe,
-                                                   colrange, rowrange)
+                __stack_temporal_downsample_accum!(
+                    ds,
+                    stack,
+                    i,
+                    srcframe,
+                    colrange,
+                    rowrange,
+                )
             end
             __stack_temporal_downsample_scale!(ds, factor, i, colrange, rowrange)
         end
@@ -1137,8 +1295,7 @@ function stack_temporal_downsample!(ds, stack, factor; kwargs...)
     _stack_temporal_downsample!(ds, stack, factor; kwargs...)
 end
 
-function stack_temporal_downsample(::Type{T}, stack, factor;
-                                   nt = nthreads()) where T
+function stack_temporal_downsample(::Type{T}, stack, factor; nt = nthreads()) where {T}
     nr, nc, nf = size(stack)
     nff = fld(nf, factor)
     ds = zeros(T, nr, nc, nff)
@@ -1198,8 +1355,7 @@ function _update_medians!(filterbank, enteringb, exitingb, xr, yr)
     end
 end
 
-function _update_subtract_medians!(outb, filterbank, refb, enteringb, exitingb,
-                                   xr, yr)
+function _update_subtract_medians!(outb, filterbank, refb, enteringb, exitingb, xr, yr)
     for y in yr
         @inbounds for x in xr
             update_filter!(filterbank[x, y], enteringb[x, y], exitingb[x, y])
@@ -1208,9 +1364,12 @@ function _update_subtract_medians!(outb, filterbank, refb, enteringb, exitingb,
     end
 end
 
-function median_filter_frames!(outb,
-                               filterbank::AbstractMatrix{<:MedianFilter},
-                               inb; nt = nthreads())
+function median_filter_frames!(
+    outb,
+    filterbank::AbstractMatrix{<:MedianFilter},
+    inb;
+    nt = nthreads(),
+)
     insz = size(inb)
     insz == size(outb) || throw(ArgumentError("data sizes do not match"))
     nx, ny, nf = size(inb)
@@ -1223,56 +1382,73 @@ function median_filter_frames!(outb,
     if nt > 1
         yranges = splits(1:ny, nt)
         tasks = Vector{Task}(undef, nt)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             tasks[tno] = @spawn(
-                _initialize_median_filters!(filterbank, inb, xr, yranges[tno],
-                                           init_range)
+                _initialize_median_filters!(filterbank, inb, xr, yranges[tno], init_range)
             )
         end
         foreach(wait, tasks)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             tasks[tno] = @spawn _get_medians!(medbuff, filterbank, xr, yranges[tno])
         end
         foreach(wait, tasks)
-        for i in 1 : half_win + 1
-            @inbounds for tno in 1:nt
+        for i = 1:(half_win+1)
+            @inbounds for tno = 1:nt
                 tasks[tno] = @spawn(
-                    _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i),
-                                     medbuff, xr, first(yranges[tno]),
-                                     last(yranges[tno]))
+                    _subtract_frame!(
+                        view(outb,:,:,i),
+                        view(inb,:,:,i),
+                        medbuff,
+                        xr,
+                        first(yranges[tno]),
+                        last(yranges[tno]),
+                    )
                 )
             end
             foreach(wait, tasks)
         end
-        for i in half_win + 2 : nf - half_win - 1
-            @inbounds for tno in 1:nt
+        for i = (half_win+2):(nf-half_win-1)
+            @inbounds for tno = 1:nt
                 tasks[tno] = @spawn(
-                    _update_subtract_medians!(view(outb, :, :, i), filterbank,
-                                              view(inb, :, :, i),
-                                              view(inb, :, :, i + half_win),
-                                              view(inb, :, :, i - half_win - 1),
-                                              xr, yranges[tno])
+                    _update_subtract_medians!(
+                        view(outb,:,:,i),
+                        filterbank,
+                        view(inb,:,:,i),
+                        view(inb,:,:,(i+half_win)),
+                        view(inb,:,:,(i-half_win-1)),
+                        xr,
+                        yranges[tno],
+                    )
                 )
             end
             foreach(wait, tasks)
         end
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             tasks[tno] = @spawn(
-                _update_medians!(filterbank, view(inb, :, :, nf),
-                                 view(inb, :, :, nf - 2 * half_win - 1), xr,
-                                 yranges[tno])
+                _update_medians!(
+                    filterbank,
+                    view(inb,:,:,nf),
+                    view(inb,:,:,(nf-2*half_win-1)),
+                    xr,
+                    yranges[tno],
+                )
             )
         end
         foreach(wait, tasks)
-        @inbounds for tno in 1:nt
+        @inbounds for tno = 1:nt
             tasks[tno] = @spawn _get_medians!(medbuff, filterbank, xr, yranges[tno])
         end
-        for i in nf - half_win : nf
-            @inbounds for tno in 1:nt
+        for i = (nf-half_win):nf
+            @inbounds for tno = 1:nt
                 tasks[tno] = @spawn(
-                    _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i),
-                                     medbuff, xr, first(yranges[tno]),
-                                     last(yranges[tno]))
+                    _subtract_frame!(
+                        view(outb,:,:,i),
+                        view(inb,:,:,i),
+                        medbuff,
+                        xr,
+                        first(yranges[tno]),
+                        last(yranges[tno]),
+                    )
                 )
             end
             foreach(wait, tasks)
@@ -1281,38 +1457,50 @@ function median_filter_frames!(outb,
         yrange = 1:ny
         _initialize_median_filters!(filterbank, inb, xr, yrange, init_range)
         _get_medians!(medbuff, filterbank, xr, yrange)
-        @inbounds for i in 1 : half_win + 1
-            _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i), medbuff,
-                             xr, 1, ny)
+        @inbounds for i = 1:(half_win+1)
+            _subtract_frame!(view(outb,:,:,i), view(inb,:,:,i), medbuff, xr, 1, ny)
         end
-        @inbounds for i in half_win + 2 : nf - half_win - 1
-            _update_subtract_medians!(view(outb, :, :, i), filterbank,
-                                      view(inb, :, :, i),
-                                      view(inb, :, :, i + half_win),
-                                      view(inb, :, :, i - half_win - 1), xr,
-                                      yrange)
+        @inbounds for i = (half_win+2):(nf-half_win-1)
+            _update_subtract_medians!(
+                view(outb,:,:,i),
+                filterbank,
+                view(inb,:,:,i),
+                view(inb,:,:,(i+half_win)),
+                view(inb,:,:,(i-half_win-1)),
+                xr,
+                yrange,
+            )
         end
-        _update_medians!(filterbank, view(inb, :, :, nf),
-                         view(inb, :, :, nf - 2 * half_win - 1), xr, yrange)
+        _update_medians!(
+            filterbank,
+            view(inb,:,:,nf),
+            view(inb,:,:,(nf-2*half_win-1)),
+            xr,
+            yrange,
+        )
         _get_medians!(medbuff, filterbank, xr, yrange)
-        for i in nf - half_win : nf
-            _subtract_frame!(view(outb, :, :, i), view(inb, :, :, i), medbuff,
-                             xr, 1, ny)
+        for i = (nf-half_win):nf
+            _subtract_frame!(view(outb,:,:,i), view(inb,:,:,i), medbuff, xr, 1, ny)
         end
     end
     outb
 end
 
-function median_filter_frames!(outb, inb::AbstractArray, filter_npt,
-                               valrange::AbstractRange{T}; discrete = false,
-                               kwargs...) where T<:Number
+function median_filter_frames!(
+    outb,
+    inb::AbstractArray,
+    filter_npt,
+    valrange::AbstractRange{T};
+    discrete = false,
+    kwargs...,
+) where {T<:Number}
     nx, ny, nf = size(inb)
     half_win = div(filter_npt - 1, 2)
     nwin = 2 * half_win + 1
     if discrete
-        filterbank = Matrix{MedianFilter{T, true}}(undef, nx, ny)
+        filterbank = Matrix{MedianFilter{T,true}}(undef, nx, ny)
     else
-        filterbank = Matrix{MedianFilter{T, false}}(undef, nx, ny)
+        filterbank = Matrix{MedianFilter{T,false}}(undef, nx, ny)
     end
     for i in eachindex(filterbank)
         filterbank[i] = MedianFilter(valrange, nwin, discrete)
