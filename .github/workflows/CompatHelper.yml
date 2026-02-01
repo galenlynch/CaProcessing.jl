@@ -10,8 +10,11 @@ jobs:
       - name: Install CompatHelper
         run: using Pkg; Pkg.add("CompatHelper")
         shell: julia --color=yes {0}
+      - name: Add custom registry
+        run: using Pkg; Pkg.Registry.add(Pkg.RegistrySpec(url="https://github.com/galenlynch/GalenRegistry.git"))
+        shell: julia --color=yes {0}
       - name: Run CompatHelper
-        run: using CompatHelper; CompatHelper.main()
+        run: using CompatHelper; CompatHelper.main(; use_existing_registries=true)
         shell: julia --color=yes {0}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
