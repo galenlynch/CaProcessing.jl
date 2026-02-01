@@ -12,7 +12,7 @@ using FixedPointNumbers: Normed, N0f8, N6f10, floattype
 using ImageCore: rawview
 using ImageBase: restrict
 # Private packages
-using SignalIndices: indices_above_thres
+using SignalIndices: indices_above_thresh
 using SortedIntervals: reduce_extrema, clip_interval_duration
 
 export MedianFilter,
@@ -1066,7 +1066,7 @@ function frame_map!(
     stack::AbstractArray{<:Any,3},
     args...;
     nt = nthreads(),
-) where {S,T}
+) where {T}
     nr, nc, nf = size(stack)
     rowrange = 1:nr
     if nt > 1

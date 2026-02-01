@@ -1,6 +1,6 @@
 name = "CaProcessing"
 uuid = "5d3dd9f5-cffe-4d9b-8768-e5b1153cff1e"
-version = "0.1.8"
+version = "0.1.9"
 authors = ["Galen Lynch <galen@galenlynch.com>"]
 
 [deps]
